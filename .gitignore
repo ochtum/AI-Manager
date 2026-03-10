@@ -3,6 +3,9 @@ __pycache__/
 *.pyo
 .env
 .venv/
+.claude
+.vscode
+css/
 venv/
 dist/
 build/

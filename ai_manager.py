@@ -6,12 +6,14 @@ and shows their status (processing / waiting for input).
 
 import ctypes
 import ctypes.wintypes
+import json
 import os
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import psutil
@@ -21,7 +23,11 @@ import psutil
 # ---------------------------------------------------------------------------
 
 REFRESH_INTERVAL_MS = 1000  # auto-refresh every 1 second
-CPU_BUSY_THRESHOLD = 5.0    # percent – above this = "processing"
+CPU_BUSY_THRESHOLD = 2.0    # percent – tree CPU above this = "processing"
+IO_BUSY_THRESHOLD = 1000    # bytes – I/O delta above this = "processing"
+
+# Settings file – stored next to the script
+_SETTINGS_FILE = Path(__file__).resolve().parent / "settings.json"
 
 # Process identification patterns
 # Each entry: (display_name, exe_patterns, cmdline_keywords, cmdline_exclude, path_keywords)
@@ -234,6 +240,75 @@ def _has_cli_ancestor(proc: psutil.Process, display_name: str) -> bool:
     except (psutil.AccessDenied, psutil.NoSuchProcess):
         pass
     return False
+
+
+# ---------------------------------------------------------------------------
+# Status detection – tree CPU + I/O delta
+# ---------------------------------------------------------------------------
+
+# Track I/O counters from previous scan: pid -> total_bytes
+_prev_io: dict[int, int] = {}
+
+
+def _get_tree_io(proc: psutil.Process) -> int:
+    """Return the total I/O bytes (read+write) for a process and its children."""
+    total = 0
+    try:
+        io = proc.io_counters()
+        total += io.read_bytes + io.write_bytes
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        pass
+    try:
+        for child in proc.children(recursive=True):
+            try:
+                cio = child.io_counters()
+                total += cio.read_bytes + cio.write_bytes
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                pass
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        pass
+    return total
+
+
+def _get_tree_cpu(proc: psutil.Process) -> float:
+    """Return the sum of cpu_percent for a process and its children."""
+    total = 0.0
+    try:
+        total += proc.cpu_percent(interval=None)
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        pass
+    try:
+        for child in proc.children(recursive=True):
+            try:
+                total += child.cpu_percent(interval=None)
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                pass
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        pass
+    return total
+
+
+def _detect_status(proc: psutil.Process) -> tuple[float, str]:
+    """Detect whether a process is busy or waiting for input.
+
+    Uses two signals:
+      1. Tree CPU (process + children) > CPU_BUSY_THRESHOLD
+      2. I/O delta since last scan > IO_BUSY_THRESHOLD
+
+    Returns (tree_cpu, status_string).
+    """
+    pid = proc.pid
+    tree_cpu = _get_tree_cpu(proc)
+    current_io = _get_tree_io(proc)
+
+    # Calculate I/O delta
+    prev = _prev_io.get(pid)
+    _prev_io[pid] = current_io
+    io_delta = (current_io - prev) if prev is not None else 0
+
+    is_busy = tree_cpu > CPU_BUSY_THRESHOLD or io_delta > IO_BUSY_THRESHOLD
+    status = "Processing" if is_busy else "Waiting for input"
+    return tree_cpu, status
 
 
 def _get_console_hwnd_for_pid(pid: int) -> Optional[int]:
@@ -510,13 +585,8 @@ def scan_processes() -> list[CLIProcess]:
             if _has_cli_ancestor(proc, display_name):
                 continue
 
-            # Sample CPU
-            try:
-                cpu = proc.cpu_percent(interval=None)  # non-blocking
-            except (psutil.AccessDenied, psutil.NoSuchProcess):
-                cpu = 0.0
-
-            status = "Processing" if cpu > CPU_BUSY_THRESHOLD else "Waiting for input"
+            # Determine status using tree CPU + I/O delta
+            cpu, status = _detect_status(proc)
 
             cmdline_str = " ".join(info.get("cmdline") or [])
 
@@ -584,6 +654,12 @@ def scan_processes() -> list[CLIProcess]:
     # Resolve exact console HWNDs for each process
     _resolve_hwnds(results)
 
+    # Clean stale _prev_io entries for PIDs that no longer exist
+    live_pids = {p.pid for p in results}
+    for stale_pid in list(_prev_io):
+        if stale_pid not in live_pids:
+            del _prev_io[stale_pid]
+
     return results
 
 
@@ -602,7 +678,11 @@ class AIManagerApp:
         self._processes: list[CLIProcess] = []
         self._scanning = False
 
+        # Always-on-top state (restored from settings)
+        self._topmost_var = tk.BooleanVar(value=self._load_topmost_setting())
+
         self._build_ui()
+        self._apply_topmost()
         self._schedule_refresh()
 
     # ---- UI construction ----
@@ -647,6 +727,15 @@ class AIManagerApp:
                                  command=self._manual_refresh)
         refresh_btn.pack(side=tk.LEFT, padx=4)
 
+        topmost_cb = tk.Checkbutton(
+            btn_frame, text="Always on Top",
+            variable=self._topmost_var, command=self._on_topmost_toggle,
+            bg="#313244", fg="#cdd6f4", selectcolor="#45475a",
+            activebackground="#313244", activeforeground="#cdd6f4",
+            font=("Segoe UI", 9),
+        )
+        topmost_cb.pack(side=tk.LEFT, padx=(12, 4))
+
         # Treeview
         columns = ("cli", "pid", "status", "cpu", "cwd", "terminal")
         tree_frame = tk.Frame(self.root, bg=bg)
@@ -688,6 +777,36 @@ class AIManagerApp:
                         text="Double-click or press Enter to activate the selected process window",
                         font=("Segoe UI", 8), bg=bg, fg="#6c7086")
         hint.pack(side=tk.BOTTOM, pady=(0, 6))
+
+    # ---- Always-on-top ----
+
+    @staticmethod
+    def _load_topmost_setting() -> bool:
+        try:
+            data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+            return bool(data.get("always_on_top", False))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _save_topmost_setting(value: bool) -> None:
+        try:
+            data: dict = {}
+            if _SETTINGS_FILE.exists():
+                data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+            data["always_on_top"] = value
+            _SETTINGS_FILE.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    def _apply_topmost(self) -> None:
+        self.root.attributes("-topmost", self._topmost_var.get())
+
+    def _on_topmost_toggle(self) -> None:
+        self._apply_topmost()
+        self._save_topmost_setting(self._topmost_var.get())
 
     # ---- Refresh logic ----
 
@@ -802,6 +921,18 @@ class AIManagerApp:
 # ---------------------------------------------------------------------------
 
 def main():
+    print("=" * 50)
+    print("  AI Manager - AI CLI Process Monitor")
+    print("=" * 50)
+    print()
+    print(f"  Started at : {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Refresh    : {REFRESH_INTERVAL_MS}ms")
+    print()
+    print("  Monitoring: Claude Code / Codex CLI / GitHub Copilot CLI")
+    print()
+    print("  Close the GUI window to exit.")
+    print("-" * 50)
+
     root = tk.Tk()
 
     # Set DPI awareness for crisp rendering
@@ -812,6 +943,8 @@ def main():
 
     app = AIManagerApp(root)
     root.mainloop()
+    print()
+    print("AI Manager stopped.")
 
 
 if __name__ == "__main__":
