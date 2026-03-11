@@ -109,6 +109,11 @@ WSL_CLI_DEFINITIONS = [
     ),
 ]
 
+NON_INTERACTIVE_CMDLINE_PATTERNS = (
+    " mcp-server",
+    " --mcp-server",
+)
+
 # Windows API constants
 SW_RESTORE = 9
 GW_OWNER = 4
@@ -285,6 +290,11 @@ def _match_wsl_cli(exe_name: str, cmdline: str) -> tuple[Optional[str], int]:
                         return display_name, 2
                     return display_name, 1
     return None, 0
+
+
+def _is_non_interactive_cli_cmdline(cmdline: str) -> bool:
+    cmd = f" {cmdline.lower()} "
+    return any(pattern in cmd for pattern in NON_INTERACTIVE_CMDLINE_PATTERNS)
 
 
 def _tty_sort_key(tty: str) -> tuple[int, int, str]:
@@ -585,15 +595,16 @@ def _resolve_hwnds(procs: list[CLIProcess]) -> None:
             del _hwnd_cache[pid]
 
     for p in procs:
-        if len(p.hwnds) <= 1:
+        # WSL entries already have tab HWNDs resolved separately.
+        if "(WSL:" in p.name:
+            if p.hwnds:
+                p.hwnds = p.hwnds[:1]
             continue
 
-        # Check cache first
         if p.pid in _hwnd_cache:
             p.hwnds = [_hwnd_cache[p.pid]]
             continue
 
-        # Resolve via AttachConsole
         hwnd = _get_console_hwnd_for_pid(p.pid)
         if not hwnd and p.terminal_pid:
             hwnd = _get_console_hwnd_for_pid(p.terminal_pid)
@@ -608,7 +619,7 @@ def _resolve_hwnds(procs: list[CLIProcess]) -> None:
         if hwnd:
             _hwnd_cache[p.pid] = hwnd
             p.hwnds = [hwnd]
-        else:
+        elif p.hwnds:
             p.hwnds = p.hwnds[:1]
 
 
@@ -722,6 +733,9 @@ def _scan_wsl_processes() -> list[CLIProcess]:
             exe_name = parts[4]
             cmdline_str = parts[5]
 
+            if _is_non_interactive_cli_cmdline(cmdline_str):
+                continue
+
             display_name, match_score = _match_wsl_cli(exe_name, cmdline_str)
             if display_name is None:
                 continue
@@ -794,6 +808,9 @@ def scan_processes() -> list[CLIProcess]:
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             info = proc.info
+            cmdline_str = " ".join(info.get("cmdline") or [])
+            if _is_non_interactive_cli_cmdline(cmdline_str):
+                continue
             display_name = _match_cli(info)
             if display_name is None:
                 continue
@@ -808,8 +825,6 @@ def scan_processes() -> list[CLIProcess]:
 
             # Determine status using tree CPU + I/O delta
             cpu, status = _detect_status(proc)
-
-            cmdline_str = " ".join(info.get("cmdline") or [])
 
             # Get working directory
             try:
@@ -863,6 +878,11 @@ def scan_processes() -> list[CLIProcess]:
                         all_hwnds = find_windows_for_pid(ppid)
                 except (psutil.AccessDenied, psutil.NoSuchProcess):
                     pass
+
+            # Hide non-interactive/background CLI processes (e.g. MCP servers)
+            # when there is no activatable window.
+            if not all_hwnds:
+                continue
 
             results.append(CLIProcess(
                 name=display_name,
