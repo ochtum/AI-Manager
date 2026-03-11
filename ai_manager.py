@@ -30,8 +30,10 @@ CPU_BUSY_THRESHOLD = 2.0    # percent – tree CPU above this = "processing"
 IO_BUSY_THRESHOLD = 1000    # bytes – I/O delta above this = "processing"
 LANDSCAPE_GEOMETRY = "1200x420"
 PORTRAIT_GEOMETRY = "320x760"
+MINIMIZED_GEOMETRY = "220x90"
 LANDSCAPE_MIN_SIZE = (900, 320)
 PORTRAIT_MIN_SIZE = (280, 460)
+MINIMIZED_MIN_SIZE = (220, 90)
 GEOMETRY_SAVE_DELAY_MS = 450
 
 # Settings file – stored next to the script
@@ -974,16 +976,20 @@ class AIManagerApp:
         self._process_lookup: dict[int, CLIProcess] = {}
         self._scanning = False
         self._settings = self._load_settings()
-        self._layout_geometries = self._load_layout_geometries(
+        self._window_geometries = self._load_window_geometries(
             self._settings.get("window_geometries")
         )
         self._process_labels = self._load_process_labels(
             self._settings.get("process_labels")
         )
         self._card_widgets: dict[int, dict[str, object]] = {}
+        self._tree_label_widgets: dict[int, tk.Button] = {}
         self._portrait_canvas_window: Optional[int] = None
         self._geometry_save_job: Optional[str] = None
+        self._tree_label_layout_job: Optional[str] = None
         self._suspend_geometry_tracking = False
+        self._window_mode = "normal"
+        self._restore_layout_after_minimize: Optional[str] = None
 
         # Always-on-top state (restored from settings)
         self._topmost_var = tk.BooleanVar(
@@ -1059,6 +1065,14 @@ class AIManagerApp:
         )
         self.layout_btn.pack(side=tk.LEFT, padx=(4, 0))
 
+        self.minimize_btn = ttk.Button(
+            self.actions_frame,
+            text="Minimize",
+            style="Accent.TButton",
+            command=self._enter_minimized_mode,
+        )
+        self.minimize_btn.pack(side=tk.LEFT, padx=(4, 0))
+
         topmost_cb = tk.Checkbutton(
             self.actions_frame,
             text="Top",
@@ -1074,7 +1088,7 @@ class AIManagerApp:
         topmost_cb.pack(side=tk.LEFT, padx=(4, 0))
 
         # Treeview
-        columns = ("cli", "pid", "status", "cpu", "cwd", "terminal")
+        columns = ("cli", "pid", "status", "cpu", "label", "cwd", "terminal")
         self.content_frame = tk.Frame(self.root, bg=self.BG)
         self.content_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
@@ -1086,6 +1100,7 @@ class AIManagerApp:
         self.tree.heading("pid", text="PID")
         self.tree.heading("status", text="Status")
         self.tree.heading("cpu", text="CPU %")
+        self.tree.heading("label", text="Label")
         self.tree.heading("cwd", text="Working Directory")
         self.tree.heading("terminal", text="Terminal")
 
@@ -1093,17 +1108,19 @@ class AIManagerApp:
         self.tree.column("pid", width=80, minwidth=60, anchor=tk.CENTER)
         self.tree.column("status", width=160, minwidth=120)
         self.tree.column("cpu", width=80, minwidth=60, anchor=tk.CENTER)
+        self.tree.column("label", width=140, minwidth=110)
         self.tree.column("cwd", width=300, minwidth=150)
         self.tree.column("terminal", width=300, minwidth=150)
 
         self.tree_scrollbar = ttk.Scrollbar(
             self.tree_frame,
             orient=tk.VERTICAL,
-            command=self.tree.yview,
+            command=self._on_tree_scroll,
         )
-        self.tree.configure(yscrollcommand=self.tree_scrollbar.set)
+        self.tree.configure(yscrollcommand=self._on_tree_yview)
         self.tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.pack(fill=tk.BOTH, expand=True)
+        self._tree_label_column_id = f"#{columns.index('label') + 1}"
 
         # Row colors by status
         self.tree.tag_configure("waiting",
@@ -1114,6 +1131,11 @@ class AIManagerApp:
         # Double-click / Enter to activate window
         self.tree.bind("<Double-1>", self._on_tree_activate)
         self.tree.bind("<Return>", self._on_tree_activate)
+        self.tree.bind("<ButtonRelease-1>", self._on_tree_click, add="+")
+        self.tree.bind("<Configure>", self._on_tree_geometry_change, add="+")
+        self.tree.bind("<MouseWheel>", self._on_tree_geometry_change, add="+")
+        self.tree.bind("<Button-4>", self._on_tree_geometry_change, add="+")
+        self.tree.bind("<Button-5>", self._on_tree_geometry_change, add="+")
 
         self.portrait_frame = tk.Frame(self.content_frame, bg=self.BG)
         self.portrait_canvas = tk.Canvas(
@@ -1159,6 +1181,15 @@ class AIManagerApp:
         )
         self.hint_label.pack(side=tk.BOTTOM, pady=(0, 6))
 
+        self.minimized_frame = tk.Frame(self.root, bg=self.BG)
+        self.restore_btn = ttk.Button(
+            self.minimized_frame,
+            text="Restore",
+            style="Accent.TButton",
+            command=self._restore_from_minimized,
+        )
+        self.restore_btn.pack(expand=True, ipadx=6, ipady=4)
+
         self.root.bind("<Configure>", self._on_root_configure)
         self.root.bind_all("<MouseWheel>", self._on_global_mousewheel, add="+")
         self.root.bind_all("<Button-4>", self._on_global_mousewheel_linux, add="+")
@@ -1185,11 +1216,11 @@ class AIManagerApp:
             pass
 
     @staticmethod
-    def _load_layout_geometries(data) -> dict[str, str]:
+    def _load_window_geometries(data) -> dict[str, str]:
         if not isinstance(data, dict):
             return {}
         result: dict[str, str] = {}
-        for layout in ("landscape", "portrait"):
+        for layout in ("landscape", "portrait", "minimized"):
             geometry = data.get(layout)
             if isinstance(geometry, str) and AIManagerApp._is_valid_geometry(geometry):
                 result[layout] = geometry
@@ -1421,8 +1452,22 @@ class AIManagerApp:
             return None
         return f"{width}x{height}{x:+d}{y:+d}"
 
-    def _default_layout_geometry(self, layout: str, preserve_position: bool = False) -> str:
-        geometry = LANDSCAPE_GEOMETRY if layout == "landscape" else PORTRAIT_GEOMETRY
+    def _geometry_key_for_current_view(self) -> str:
+        return "minimized" if self._window_mode == "minimized" else self._current_layout
+
+    def _default_window_geometry(
+        self,
+        layout: str,
+        preserve_position: bool = False,
+    ) -> str:
+        if layout == "landscape":
+            geometry = LANDSCAPE_GEOMETRY
+        elif layout == "portrait":
+            geometry = PORTRAIT_GEOMETRY
+        elif layout == "minimized":
+            geometry = MINIMIZED_GEOMETRY
+        else:
+            raise ValueError(f"Unknown layout: {layout}")
         if not preserve_position:
             return geometry
         try:
@@ -1435,24 +1480,24 @@ class AIManagerApp:
         width, height = self._geometry_size(geometry)
         return f"{width}x{height}{x:+d}{y:+d}"
 
-    def _restore_layout_geometry(self, layout: str, preserve_position: bool = False) -> None:
-        geometry = self._layout_geometries.get(layout)
+    def _restore_window_geometry(self, layout: str, preserve_position: bool = False) -> None:
+        geometry = self._window_geometries.get(layout)
         if geometry is None:
-            geometry = self._default_layout_geometry(
+            geometry = self._default_window_geometry(
                 layout,
                 preserve_position=preserve_position,
             )
         self.root.geometry(geometry)
 
-    def _save_layout_geometry(self, layout: Optional[str] = None) -> None:
-        target_layout = layout or self._current_layout
+    def _save_window_geometry(self, layout: Optional[str] = None) -> None:
+        target_layout = layout or self._geometry_key_for_current_view()
         geometry = self._current_geometry_string()
         if geometry is None:
             return
-        if self._layout_geometries.get(target_layout) == geometry:
+        if self._window_geometries.get(target_layout) == geometry:
             return
-        self._layout_geometries[target_layout] = geometry
-        self._settings["window_geometries"] = dict(self._layout_geometries)
+        self._window_geometries[target_layout] = geometry
+        self._settings["window_geometries"] = dict(self._window_geometries)
         self._write_settings(self._settings)
 
     def _schedule_geometry_save(self) -> None:
@@ -1467,7 +1512,7 @@ class AIManagerApp:
 
     def _flush_geometry_save(self) -> None:
         self._geometry_save_job = None
-        self._save_layout_geometry()
+        self._save_window_geometry()
 
     def _apply_topmost(self) -> None:
         self.root.attributes("-topmost", self._topmost_var.get())
@@ -1485,7 +1530,7 @@ class AIManagerApp:
         if self._geometry_save_job is not None:
             self.root.after_cancel(self._geometry_save_job)
             self._geometry_save_job = None
-        self._save_layout_geometry(self._current_layout)
+        self._save_window_geometry(self._current_layout)
         self._apply_layout()
         self._save_setting("layout_mode", target_layout)
 
@@ -1503,7 +1548,7 @@ class AIManagerApp:
         self._suspend_geometry_tracking = True
         if layout == "portrait":
             self.root.minsize(*PORTRAIT_MIN_SIZE)
-            self._restore_layout_geometry(
+            self._restore_window_geometry(
                 layout,
                 preserve_position=not initial,
             )
@@ -1524,7 +1569,7 @@ class AIManagerApp:
             self.root.after_idle(self._refresh_portrait_wraplengths)
         else:
             self.root.minsize(*LANDSCAPE_MIN_SIZE)
-            self._restore_layout_geometry(
+            self._restore_window_geometry(
                 layout,
                 preserve_position=not initial,
             )
@@ -1543,6 +1588,7 @@ class AIManagerApp:
         self._suspend_geometry_tracking = False
         self._refresh_status_wraplength()
         self._schedule_geometry_save()
+        self._schedule_tree_label_layout()
 
     def _on_root_configure(self, event) -> None:
         if event.widget is not self.root:
@@ -1554,8 +1600,58 @@ class AIManagerApp:
         if self._geometry_save_job is not None:
             self.root.after_cancel(self._geometry_save_job)
             self._geometry_save_job = None
-        self._save_layout_geometry()
+        self._save_window_geometry()
         self.root.destroy()
+
+    def _show_normal_view(self) -> None:
+        self.minimized_frame.pack_forget()
+        if self.header.winfo_manager() != "pack":
+            self.header.pack(fill=tk.X)
+        if self.content_frame.winfo_manager() != "pack":
+            self.content_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        if self.hint_label.winfo_manager() != "pack":
+            self.hint_label.pack(side=tk.BOTTOM, pady=(0, 6))
+
+    def _show_minimized_view(self) -> None:
+        self.header.pack_forget()
+        self.content_frame.pack_forget()
+        self.hint_label.pack_forget()
+        if self.minimized_frame.winfo_manager() != "pack":
+            self.minimized_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+
+    def _enter_minimized_mode(self) -> None:
+        if self._window_mode == "minimized":
+            return
+        if self._geometry_save_job is not None:
+            self.root.after_cancel(self._geometry_save_job)
+            self._geometry_save_job = None
+        self._save_window_geometry(self._current_layout)
+        self._restore_layout_after_minimize = self._current_layout
+
+        self._window_mode = "minimized"
+        self._suspend_geometry_tracking = True
+        self.root.minsize(*MINIMIZED_MIN_SIZE)
+        self._show_minimized_view()
+        self._restore_window_geometry("minimized", preserve_position=True)
+        self.root.update_idletasks()
+        self._suspend_geometry_tracking = False
+        self._schedule_geometry_save()
+
+    def _restore_from_minimized(self) -> None:
+        if self._window_mode != "minimized":
+            return
+        if self._geometry_save_job is not None:
+            self.root.after_cancel(self._geometry_save_job)
+            self._geometry_save_job = None
+        self._save_window_geometry("minimized")
+
+        restore_layout = self._restore_layout_after_minimize or self._current_layout
+        self._window_mode = "normal"
+        self._restore_layout_after_minimize = None
+        self._layout_var.set(restore_layout)
+        self._show_normal_view()
+        self._apply_layout()
+        self._do_refresh()
 
     def _refresh_status_wraplength(self) -> None:
         if self._layout_var.get() == "portrait":
@@ -1649,6 +1745,7 @@ class AIManagerApp:
             bundle = self._card_widgets.get(process.pid)
             if bundle is not None:
                 self._update_label_controls(bundle, process)
+        self._refresh_tree_rows(directory)
 
     def _open_label_editor(self, pid: int) -> None:
         process = self._process_lookup.get(pid)
@@ -1891,7 +1988,8 @@ class AIManagerApp:
     # ---- Refresh logic ----
 
     def _schedule_refresh(self):
-        self._do_refresh()
+        if self._window_mode != "minimized":
+            self._do_refresh()
         self.root.after(REFRESH_INTERVAL_MS, self._schedule_refresh)
 
     def _manual_refresh(self):
@@ -1924,6 +2022,7 @@ class AIManagerApp:
             p.pid,
             self._status_text(p),
             f"{p.cpu_percent:.1f}",
+            "",
             p.cwd or "(unknown)",
             p.terminal_type or "(unknown)",
         )
@@ -1940,6 +2039,7 @@ class AIManagerApp:
 
         try:
             self._sync_tree_rows(procs)
+            self._sync_tree_label_buttons(procs)
             self._sync_portrait_cards(procs)
 
             count = len(procs)
@@ -1987,6 +2087,53 @@ class AIManagerApp:
             iid = existing_pids.get(p.pid)
             if iid:
                 self.tree.move(iid, "", index)
+
+    def _sync_tree_label_buttons(self, procs: list[CLIProcess]) -> None:
+        live_pids = {p.pid for p in procs}
+        for pid in list(self._tree_label_widgets):
+            if pid not in live_pids:
+                self._tree_label_widgets[pid].destroy()
+                del self._tree_label_widgets[pid]
+
+        for p in procs:
+            button = self._tree_label_widgets.get(p.pid)
+            if button is None:
+                button = tk.Button(
+                    self.tree_frame,
+                    font=("Segoe UI", 8, "bold"),
+                    relief=tk.FLAT,
+                    bd=0,
+                    padx=10,
+                    pady=2,
+                    cursor="hand2",
+                    command=lambda target_pid=p.pid: self._open_label_editor(target_pid),
+                )
+                self._tree_label_widgets[p.pid] = button
+
+            saved_label = self._label_for_directory(p.cwd)
+            if saved_label is None:
+                self._set_unlabeled_button_style(button)
+                if not self._normalize_directory_key(p.cwd):
+                    button.config(
+                        text="No Label",
+                        state=tk.DISABLED,
+                        bg=self.CHIP_BG,
+                        fg=self.SUBTLE_FG,
+                        activebackground=self.CHIP_BG,
+                        activeforeground=self.SUBTLE_FG,
+                        disabledforeground=self.SUBTLE_FG,
+                        highlightthickness=1,
+                        highlightbackground="#45475a",
+                        highlightcolor="#45475a",
+                    )
+            else:
+                self._set_saved_label_button_style(
+                    button,
+                    saved_label["name"],
+                    saved_label["color"],
+                )
+
+        self._schedule_tree_label_layout()
 
     def _sync_portrait_cards(self, procs: list[CLIProcess]) -> None:
         live_pids = {p.pid for p in procs}
@@ -2068,9 +2215,16 @@ class AIManagerApp:
             font=("Segoe UI", 8, "bold"),
             relief=tk.FLAT,
             bd=0,
-            padx=8,
-            pady=3,
+            padx=10,
+            pady=4,
             cursor="hand2",
+            bg=self.CHIP_BG,
+            fg=self.FG,
+            activebackground=self.SELECT_BG,
+            activeforeground="#ffffff",
+            highlightthickness=1,
+            highlightbackground="#585b70",
+            highlightcolor="#89b4fa",
             command=lambda target_pid=p.pid: self._open_label_editor(target_pid),
         )
         label_button.pack(side=tk.LEFT)
@@ -2090,6 +2244,9 @@ class AIManagerApp:
             fg=self.FG,
             activebackground=self.SELECT_BG,
             activeforeground="#ffffff",
+            highlightthickness=1,
+            highlightbackground="#585b70",
+            highlightcolor="#89b4fa",
             command=lambda target_pid=p.pid: self._remove_label_via_button(target_pid),
         )
         self._mark_card_control(label_delete_button)
@@ -2194,33 +2351,132 @@ class AIManagerApp:
         setattr(widget, "_card_control", True)
         widget.bind("<Double-Button-1>", lambda _event: "break")
 
+    def _tree_label_text(self, p: CLIProcess) -> str:
+        saved_label = self._label_for_directory(p.cwd)
+        if saved_label is not None:
+            return saved_label["name"]
+        return "+ Label" if self._normalize_directory_key(p.cwd) else "No Label"
+
+    @staticmethod
+    def _tree_pid_from_values(values) -> Optional[int]:
+        if not values:
+            return None
+        try:
+            return int(values[1])
+        except (ValueError, IndexError, TypeError):
+            return None
+
+    def _tree_pid_from_item(self, item_id: str) -> Optional[int]:
+        return self._tree_pid_from_values(self.tree.item(item_id, "values"))
+
+    def _refresh_tree_rows(self, directory: str = "") -> None:
+        target = self._normalize_directory_key(directory) if directory else ""
+        for iid in self.tree.get_children():
+            pid = self._tree_pid_from_item(iid)
+            if pid is None:
+                continue
+            process = self._process_lookup.get(pid)
+            if process is None:
+                continue
+            process_directory = self._normalize_directory_key(process.cwd)
+            if target and process_directory != target:
+                continue
+            self.tree.item(
+                iid,
+                values=self._row_values(process),
+                tags=(self._status_tag(process),),
+            )
+        self._schedule_tree_label_layout()
+
+    def _schedule_tree_label_layout(self) -> None:
+        if self._tree_label_layout_job is not None:
+            self.root.after_cancel(self._tree_label_layout_job)
+        self._tree_label_layout_job = self.root.after_idle(self._layout_tree_label_buttons)
+
+    def _layout_tree_label_buttons(self) -> None:
+        self._tree_label_layout_job = None
+        if self._current_layout != "landscape" or self._window_mode == "minimized":
+            for button in self._tree_label_widgets.values():
+                button.place_forget()
+            return
+
+        self.tree.update_idletasks()
+        tree_x = self.tree.winfo_x()
+        tree_y = self.tree.winfo_y()
+        for iid in self.tree.get_children():
+            pid = self._tree_pid_from_item(iid)
+            if pid is None:
+                continue
+            button = self._tree_label_widgets.get(pid)
+            if button is None:
+                continue
+            bbox = self.tree.bbox(iid, self._tree_label_column_id)
+            if not bbox:
+                button.place_forget()
+                continue
+            cell_x, cell_y, cell_width, cell_height = bbox
+            width = max(cell_width - 8, 36)
+            height = max(cell_height - 4, 20)
+            button.place(
+                x=tree_x + cell_x + 4,
+                y=tree_y + cell_y + 2,
+                width=width,
+                height=height,
+            )
+
+    def _on_tree_yview(self, first, last) -> None:
+        self.tree_scrollbar.set(first, last)
+        self._schedule_tree_label_layout()
+
+    def _on_tree_scroll(self, *args) -> None:
+        self.tree.yview(*args)
+        self._schedule_tree_label_layout()
+
+    def _on_tree_geometry_change(self, _event=None) -> None:
+        self._schedule_tree_label_layout()
+
+    def _set_unlabeled_button_style(self, button: tk.Button) -> None:
+        button.config(
+            text="+ Label",
+            state=tk.NORMAL,
+            bg=self.CHIP_BG,
+            fg=self.FG,
+            activebackground=self.SELECT_BG,
+            activeforeground="#ffffff",
+            disabledforeground=self.SUBTLE_FG,
+            highlightthickness=1,
+            highlightbackground="#7f849c",
+            highlightcolor="#89b4fa",
+        )
+
+    def _set_saved_label_button_style(self, button: tk.Button, name: str, color: str) -> None:
+        parsed_color = self._color_to_hex(color)
+        text_color = self._label_text_color(parsed_color)
+        button.config(
+            text=name,
+            state=tk.NORMAL,
+            bg=parsed_color,
+            fg=text_color,
+            activebackground=parsed_color,
+            activeforeground=text_color,
+            disabledforeground=text_color,
+            highlightthickness=0,
+        )
+
     def _update_label_controls(self, bundle: dict[str, object], p: CLIProcess) -> None:
         label_button = bundle["label_button"]
         label_delete_button = bundle["label_delete_button"]
         saved_label = self._label_for_directory(p.cwd)
 
         if saved_label is None:
-            label_button.config(
-                text="+ Label",
-                bg=self.CARD_BG,
-                fg=self.MUTED_FG,
-                activebackground="#34374b",
-                activeforeground=self.FG,
-                highlightthickness=1,
-                highlightbackground="#585b70",
-            )
+            self._set_unlabeled_button_style(label_button)
             label_delete_button.pack_forget()
             return
 
-        parsed_color = self._color_to_hex(saved_label["color"])
-        text_color = self._label_text_color(parsed_color)
-        label_button.config(
-            text=saved_label["name"],
-            bg=parsed_color,
-            fg=text_color,
-            activebackground=parsed_color,
-            activeforeground=text_color,
-            highlightthickness=0,
+        self._set_saved_label_button_style(
+            label_button,
+            saved_label["name"],
+            saved_label["color"],
         )
         label_delete_button.pack(side=tk.LEFT, padx=(6, 0))
 
@@ -2254,17 +2510,40 @@ class AIManagerApp:
 
     # ---- Window activation ----
 
+    def _on_tree_click(self, event=None):
+        if event is None:
+            return None
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return None
+        column = self.tree.identify_column(event.x)
+        if column != self._tree_label_column_id:
+            return None
+
+        item_id = self.tree.identify_row(event.y)
+        if not item_id:
+            return "break"
+
+        self.tree.selection_set(item_id)
+        pid = self._tree_pid_from_item(item_id)
+        if pid is None:
+            return "break"
+
+        self._open_label_editor(pid)
+        return "break"
+
     def _on_tree_activate(self, _event=None):
+        if _event is not None and getattr(_event, "x", None) is not None:
+            region = self.tree.identify("region", _event.x, _event.y)
+            column = self.tree.identify_column(_event.x)
+            if region == "cell" and column == self._tree_label_column_id:
+                return "break"
+
         sel = self.tree.selection()
         if not sel:
             return
-        values = self.tree.item(sel[0], "values")
-        if not values:
-            return
-        pid_str = values[1]
-        try:
-            pid = int(pid_str)
-        except ValueError:
+        pid = self._tree_pid_from_item(sel[0])
+        if pid is None:
             return
 
         self._activate_pid(pid)

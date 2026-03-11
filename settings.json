@@ -3,6 +3,13 @@
   "layout_mode": "portrait",
   "window_geometries": {
     "landscape": "1200x420+2476+356",
-    "portrait": "280x760+3496+156"
+    "portrait": "280x760+3496+156",
+    "minimized": "220x90+3104+452"
+  },
+  "process_labels": {
+    "/mnt/d/source/AI-Manager": {
+      "name": "テスト",
+      "color": "#f9e2af"
+    }
   }
 }
