@@ -7,13 +7,14 @@ and shows their status (processing / waiting for input).
 import ctypes
 import ctypes.wintypes
 import json
+import math
 import os
 import re
 import shlex
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -107,6 +108,11 @@ WSL_CLI_DEFINITIONS = [
         ["microsoft.copilot", "m365copilot"],
     ),
 ]
+
+NON_INTERACTIVE_CMDLINE_PATTERNS = (
+    " mcp-server",
+    " --mcp-server",
+)
 
 # Windows API constants
 SW_RESTORE = 9
@@ -284,6 +290,11 @@ def _match_wsl_cli(exe_name: str, cmdline: str) -> tuple[Optional[str], int]:
                         return display_name, 2
                     return display_name, 1
     return None, 0
+
+
+def _is_non_interactive_cli_cmdline(cmdline: str) -> bool:
+    cmd = f" {cmdline.lower()} "
+    return any(pattern in cmd for pattern in NON_INTERACTIVE_CMDLINE_PATTERNS)
 
 
 def _tty_sort_key(tty: str) -> tuple[int, int, str]:
@@ -584,15 +595,16 @@ def _resolve_hwnds(procs: list[CLIProcess]) -> None:
             del _hwnd_cache[pid]
 
     for p in procs:
-        if len(p.hwnds) <= 1:
+        # WSL entries already have tab HWNDs resolved separately.
+        if "(WSL:" in p.name:
+            if p.hwnds:
+                p.hwnds = p.hwnds[:1]
             continue
 
-        # Check cache first
         if p.pid in _hwnd_cache:
             p.hwnds = [_hwnd_cache[p.pid]]
             continue
 
-        # Resolve via AttachConsole
         hwnd = _get_console_hwnd_for_pid(p.pid)
         if not hwnd and p.terminal_pid:
             hwnd = _get_console_hwnd_for_pid(p.terminal_pid)
@@ -607,7 +619,7 @@ def _resolve_hwnds(procs: list[CLIProcess]) -> None:
         if hwnd:
             _hwnd_cache[p.pid] = hwnd
             p.hwnds = [hwnd]
-        else:
+        elif p.hwnds:
             p.hwnds = p.hwnds[:1]
 
 
@@ -615,7 +627,7 @@ def _find_wsl_tab_hwnds() -> list[tuple[int, float]]:
     """Find interactive WSL tab host processes and their console HWNDs.
 
     Returns a list of (hwnd, create_time) sorted by creation time (oldest first).
-    Each entry corresponds to one WSL terminal tab.
+    Each entry corresponds to one WSL terminal tab/window host.
     """
     import subprocess
 
@@ -651,16 +663,21 @@ def _find_wsl_tab_hwnds() -> list[tuple[int, float]]:
         try:
             # Try parent first (cmd.exe that hosts the WSL session)
             target_pid = wp.pid
+            host_proc = wp
             try:
                 parent = wp.parent()
                 if parent and (parent.name() or "").lower() == "cmd.exe":
                     target_pid = parent.pid
+                    host_proc = parent
             except (psutil.AccessDenied, psutil.NoSuchProcess):
                 pass
 
             hwnd = _get_console_hwnd_for_pid(target_pid)
             if hwnd:
-                ctime = wp.create_time()
+                # Use the window host process creation time (typically cmd.exe).
+                # Using child wsl.exe creation time can reorder tabs incorrectly
+                # when child processes are recreated.
+                ctime = host_proc.create_time()
                 tab_hwnds.append((hwnd, ctime))
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             continue
@@ -697,29 +714,51 @@ def _scan_wsl_processes() -> list[CLIProcess]:
     for distro in distros:
         try:
             ps_out = subprocess.check_output(
-                ["wsl", "-d", distro, "--", "ps", "-eo", "pid=,ppid=,pcpu=,tty=,comm=,args=", "-ww"],
+                [
+                    "wsl",
+                    "-d",
+                    distro,
+                    "--",
+                    "ps",
+                    "-eo",
+                    "pid=,ppid=,pcpu=,etimes=,tty=,comm=,args=",
+                    "-ww",
+                ],
                 timeout=5, stderr=subprocess.DEVNULL,
             ).decode("utf-8", errors="replace")
         except Exception:
             continue
 
+        # Per-tty "age" proxy (seconds): larger means the tty has older processes.
+        # This is more reliable than raw pts numbering when pts values were reused.
+        tty_age_seconds: dict[str, int] = {}
+
         # First pass: pick the best-matching process for each CLI/TTY pair.
         best_by_tty: dict[tuple[str, str], tuple[tuple[int, float, int], CLIProcess]] = {}
 
         for line in ps_out.splitlines():
-            parts = line.split(None, 5)
-            if len(parts) < 6:
+            parts = line.split(None, 6)
+            if len(parts) < 7:
                 continue
 
             try:
                 wsl_pid = int(parts[0])
                 cpu = float(parts[2])
+                elapsed = int(parts[3])
             except ValueError:
                 continue
 
-            tty = parts[3]
-            exe_name = parts[4]
-            cmdline_str = parts[5]
+            tty = parts[4]
+            exe_name = parts[5]
+            cmdline_str = parts[6]
+
+            if tty and tty != "?":
+                previous = tty_age_seconds.get(tty, -1)
+                if elapsed > previous:
+                    tty_age_seconds[tty] = elapsed
+
+            if _is_non_interactive_cli_cmdline(cmdline_str):
+                continue
 
             display_name, match_score = _match_wsl_cli(exe_name, cmdline_str)
             if display_name is None:
@@ -763,11 +802,13 @@ def _scan_wsl_processes() -> list[CLIProcess]:
                 io_total,
             )
 
-        # Sort by tty (pts/2 < pts/3 < ...) to align with tab_hwnds order
-        tty_procs.sort(key=lambda x: _tty_sort_key(x[0]))
+        # Sort by inferred tty age (oldest first), then tty as a stable fallback.
+        # tab_hwnds are also sorted oldest first by host-process creation time.
+        tty_procs.sort(
+            key=lambda x: (-tty_age_seconds.get(x[0], -1), _tty_sort_key(x[0]))
+        )
 
-        # Assign HWNDs: tab_hwnds are sorted by creation time (oldest first),
-        # and tty_procs are sorted by pts number (lowest first).
+        # Assign HWNDs: both sides are sorted oldest first.
         for i, (tty, proc_entry) in enumerate(tty_procs):
             live_keys.add((distro, proc_entry.pid))
             if i < len(tab_hwnds):
@@ -793,6 +834,9 @@ def scan_processes() -> list[CLIProcess]:
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             info = proc.info
+            cmdline_str = " ".join(info.get("cmdline") or [])
+            if _is_non_interactive_cli_cmdline(cmdline_str):
+                continue
             display_name = _match_cli(info)
             if display_name is None:
                 continue
@@ -807,8 +851,6 @@ def scan_processes() -> list[CLIProcess]:
 
             # Determine status using tree CPU + I/O delta
             cpu, status = _detect_status(proc)
-
-            cmdline_str = " ".join(info.get("cmdline") or [])
 
             # Get working directory
             try:
@@ -863,6 +905,11 @@ def scan_processes() -> list[CLIProcess]:
                 except (psutil.AccessDenied, psutil.NoSuchProcess):
                     pass
 
+            # Hide non-interactive/background CLI processes (e.g. MCP servers)
+            # when there is no activatable window.
+            if not all_hwnds:
+                continue
+
             results.append(CLIProcess(
                 name=display_name,
                 pid=pid,
@@ -908,6 +955,13 @@ class AIManagerApp:
     SELECT_BG = "#45475a"
     CARD_BG = "#24273a"
     CHIP_BG = "#181825"
+    LABEL_PRESETS = [
+        ("Red", "#f38ba8"),
+        ("Blue", "#89b4fa"),
+        ("Green", "#a6e3a1"),
+        ("Yellow", "#f9e2af"),
+        ("Purple", "#cba6f7"),
+    ]
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -922,6 +976,9 @@ class AIManagerApp:
         self._settings = self._load_settings()
         self._layout_geometries = self._load_layout_geometries(
             self._settings.get("window_geometries")
+        )
+        self._process_labels = self._load_process_labels(
+            self._settings.get("process_labels")
         )
         self._card_widgets: dict[int, dict[str, object]] = {}
         self._portrait_canvas_window: Optional[int] = None
@@ -1147,6 +1204,196 @@ class AIManagerApp:
         size = geometry.split("+", 1)[0].split("-", 1)[0]
         width_str, height_str = size.split("x", 1)
         return int(width_str), int(height_str)
+
+    @staticmethod
+    def _normalize_directory_key(directory: str) -> str:
+        return directory.strip()
+
+    @classmethod
+    def _load_process_labels(cls, data) -> dict[str, dict[str, str]]:
+        if not isinstance(data, dict):
+            return {}
+        result: dict[str, dict[str, str]] = {}
+        for raw_directory, raw_label in data.items():
+            if not isinstance(raw_directory, str) or not isinstance(raw_label, dict):
+                continue
+            directory = cls._normalize_directory_key(raw_directory)
+            name = raw_label.get("name")
+            color = raw_label.get("color")
+            if not directory or not isinstance(name, str) or not isinstance(color, str):
+                continue
+            name = name.strip()
+            color = color.strip()
+            if not name or not color:
+                continue
+            try:
+                cls._color_to_hex(color)
+            except ValueError:
+                continue
+            result[directory] = {"name": name, "color": color}
+        return result
+
+    def _persist_process_labels(self) -> None:
+        if self._process_labels:
+            self._settings["process_labels"] = dict(self._process_labels)
+        else:
+            self._settings.pop("process_labels", None)
+        self._write_settings(self._settings)
+
+    @staticmethod
+    def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+        return tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
+
+    @staticmethod
+    def _rgb_to_hex(r: int, g: int, b: int) -> str:
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    @staticmethod
+    def _parse_hex_color(color_text: str) -> str:
+        hex_value = color_text.strip().lstrip("#")
+        if len(hex_value) in {3, 4}:
+            hex_value = "".join(ch * 2 for ch in hex_value[:3])
+        elif len(hex_value) in {6, 8}:
+            hex_value = hex_value[:6]
+        else:
+            raise ValueError("Hex colors must use #RGB or #RRGGBB.")
+        if not re.fullmatch(r"[0-9a-fA-F]{6}", hex_value):
+            raise ValueError("Hex colors must only contain 0-9 or A-F.")
+        return f"#{hex_value.lower()}"
+
+    @staticmethod
+    def _parse_rgb_component(component: str) -> int:
+        value = component.strip()
+        if not value:
+            raise ValueError("RGB colors must include three components.")
+        if value.endswith("%"):
+            percent = float(value[:-1])
+            return max(0, min(255, round(percent * 255 / 100)))
+        number = float(value)
+        if not 0 <= number <= 255:
+            raise ValueError("RGB components must be between 0 and 255.")
+        return round(number)
+
+    @classmethod
+    def _parse_rgb_color(cls, color_text: str) -> str:
+        body = color_text[color_text.find("(") + 1:color_text.rfind(")")]
+        body = body.split("/", 1)[0].replace(",", " ")
+        parts = [part for part in body.split() if part]
+        if len(parts) != 3:
+            raise ValueError("rgb() must include three components.")
+        rgb = [cls._parse_rgb_component(part) for part in parts]
+        return cls._rgb_to_hex(*rgb)
+
+    @staticmethod
+    def _parse_angle(value: str) -> float:
+        angle = value.strip().lower()
+        for suffix, factor in (
+            ("deg", 1.0),
+            ("grad", 0.9),
+            ("rad", 180.0 / math.pi),
+            ("turn", 360.0),
+        ):
+            if angle.endswith(suffix):
+                return float(angle[:-len(suffix)]) * factor
+        return float(angle)
+
+    @staticmethod
+    def _linear_to_srgb(value: float) -> float:
+        value = max(0.0, min(1.0, value))
+        if value <= 0.0031308:
+            return 12.92 * value
+        return 1.055 * (value ** (1 / 2.4)) - 0.055
+
+    @classmethod
+    def _oklch_to_hex(cls, lightness: float, chroma: float, hue: float) -> str:
+        hue_rad = math.radians(hue)
+        a = chroma * math.cos(hue_rad)
+        b = chroma * math.sin(hue_rad)
+
+        l_ = lightness + 0.3963377774 * a + 0.2158037573 * b
+        m_ = lightness - 0.1055613458 * a - 0.0638541728 * b
+        s_ = lightness - 0.0894841775 * a - 1.2914855480 * b
+
+        l = l_ ** 3
+        m = m_ ** 3
+        s = s_ ** 3
+
+        red_linear = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+        green_linear = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+        blue_linear = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+
+        rgb = [
+            round(cls._linear_to_srgb(channel) * 255)
+            for channel in (red_linear, green_linear, blue_linear)
+        ]
+        return cls._rgb_to_hex(*rgb)
+
+    @classmethod
+    def _parse_okclh_color(cls, color_text: str) -> str:
+        body = color_text[color_text.find("(") + 1:color_text.rfind(")")]
+        body = body.split("/", 1)[0].replace(",", " ")
+        parts = [part for part in body.split() if part]
+        if len(parts) != 3:
+            raise ValueError("okclh() must include lightness, chroma, and hue.")
+
+        lightness_raw = parts[0].strip().lower()
+        if lightness_raw.endswith("%"):
+            lightness = float(lightness_raw[:-1]) / 100
+        else:
+            lightness = float(lightness_raw)
+            if 1 < lightness <= 100:
+                lightness /= 100
+        if not 0 <= lightness <= 1:
+            raise ValueError("okclh lightness must be between 0 and 1.")
+
+        chroma_raw = parts[1].strip().lower()
+        chroma = float(chroma_raw[:-1]) / 100 if chroma_raw.endswith("%") else float(chroma_raw)
+        if chroma < 0:
+            raise ValueError("okclh chroma must be 0 or greater.")
+
+        hue = cls._parse_angle(parts[2]) % 360
+        return cls._oklch_to_hex(lightness, chroma, hue)
+
+    @classmethod
+    def _color_to_hex(cls, color_text: str) -> str:
+        color = color_text.strip()
+        if not color:
+            raise ValueError("Enter a color.")
+        lowered = color.lower()
+        if lowered.startswith("#"):
+            return cls._parse_hex_color(color)
+        if lowered.startswith("rgb(") and lowered.endswith(")"):
+            return cls._parse_rgb_color(color)
+        if lowered.startswith("okclh(") and lowered.endswith(")"):
+            return cls._parse_okclh_color(color)
+        raise ValueError("Use #hex, rgb(), or okclh().")
+
+    @classmethod
+    def _label_text_color(cls, color_text: str) -> str:
+        red, green, blue = cls._hex_to_rgb(color_text)
+        luma = (0.299 * red) + (0.587 * green) + (0.114 * blue)
+        return "#11111b" if luma > 170 else "#f9fafb"
+
+    def _label_for_directory(self, directory: str) -> Optional[dict[str, str]]:
+        key = self._normalize_directory_key(directory)
+        if not key:
+            return None
+        return self._process_labels.get(key)
+
+    def _set_process_label(self, directory: str, name: str, color: str) -> None:
+        key = self._normalize_directory_key(directory)
+        if not key:
+            return
+        self._process_labels[key] = {"name": name.strip(), "color": color.strip()}
+        self._persist_process_labels()
+
+    def _remove_process_label(self, directory: str) -> None:
+        key = self._normalize_directory_key(directory)
+        if not key:
+            return
+        if key in self._process_labels:
+            del self._process_labels[key]
+            self._persist_process_labels()
 
     def _save_setting(self, key: str, value) -> None:
         if self._settings.get(key) == value:
@@ -1393,6 +1640,254 @@ class AIManagerApp:
             for label in bundle["wrap_labels"]:
                 label.config(wraplength=detail_wrap)
 
+    def _refresh_process_label_views(self, directory: str = "") -> None:
+        target = self._normalize_directory_key(directory) if directory else ""
+        for process in self._processes:
+            process_directory = self._normalize_directory_key(process.cwd)
+            if target and process_directory != target:
+                continue
+            bundle = self._card_widgets.get(process.pid)
+            if bundle is not None:
+                self._update_label_controls(bundle, process)
+
+    def _open_label_editor(self, pid: int) -> None:
+        process = self._process_lookup.get(pid)
+        if process is None:
+            return
+
+        directory = self._normalize_directory_key(process.cwd)
+        if not directory:
+            messagebox.showinfo(
+                "Process Label",
+                "This process does not have a directory yet, so the label cannot be saved.",
+                parent=self.root,
+            )
+            return
+
+        existing = self._label_for_directory(directory)
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Process Label")
+        dialog.configure(bg=self.HEADING_BG)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        frame = tk.Frame(dialog, bg=self.HEADING_BG, padx=14, pady=14)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            frame,
+            text="Directory",
+            font=("Segoe UI", 8, "bold"),
+            bg=self.HEADING_BG,
+            fg=self.MUTED_FG,
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            frame,
+            text=directory,
+            font=("Segoe UI", 8),
+            bg=self.HEADING_BG,
+            fg=self.FG,
+            justify="left",
+            wraplength=340,
+            anchor="w",
+        ).pack(fill=tk.X, pady=(2, 10))
+
+        name_var = tk.StringVar(value=existing["name"] if existing else "")
+        color_var = tk.StringVar(
+            value=existing["color"] if existing else self.LABEL_PRESETS[0][1]
+        )
+        preview_text = tk.StringVar(value="")
+
+        tk.Label(
+            frame,
+            text="Label name",
+            font=("Segoe UI", 8, "bold"),
+            bg=self.HEADING_BG,
+            fg=self.MUTED_FG,
+            anchor="w",
+        ).pack(anchor="w")
+        name_entry = tk.Entry(
+            frame,
+            textvariable=name_var,
+            font=("Segoe UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#585b70",
+            highlightcolor="#89b4fa",
+            bg=self.CARD_BG,
+            fg=self.FG,
+            insertbackground=self.FG,
+        )
+        name_entry.pack(fill=tk.X, pady=(2, 10))
+
+        tk.Label(
+            frame,
+            text="Color code",
+            font=("Segoe UI", 8, "bold"),
+            bg=self.HEADING_BG,
+            fg=self.MUTED_FG,
+            anchor="w",
+        ).pack(anchor="w")
+        color_entry = tk.Entry(
+            frame,
+            textvariable=color_var,
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#585b70",
+            highlightcolor="#89b4fa",
+            bg=self.CARD_BG,
+            fg=self.FG,
+            insertbackground=self.FG,
+        )
+        color_entry.pack(fill=tk.X, pady=(2, 8))
+
+        tk.Label(
+            frame,
+            text="Presets",
+            font=("Segoe UI", 8, "bold"),
+            bg=self.HEADING_BG,
+            fg=self.MUTED_FG,
+            anchor="w",
+        ).pack(anchor="w")
+        preset_frame = tk.Frame(frame, bg=self.HEADING_BG)
+        preset_frame.pack(fill=tk.X, pady=(4, 10))
+
+        preview_button = tk.Button(
+            frame,
+            text="Preview",
+            font=("Segoe UI", 8, "bold"),
+            relief=tk.FLAT,
+            bd=0,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=lambda: None,
+        )
+        preview_button.pack(anchor="w")
+
+        preview_label = tk.Label(
+            frame,
+            textvariable=preview_text,
+            font=("Segoe UI", 8),
+            bg=self.HEADING_BG,
+            fg=self.MUTED_FG,
+            anchor="w",
+            justify="left",
+        )
+        preview_label.pack(fill=tk.X, pady=(6, 10))
+
+        actions = tk.Frame(frame, bg=self.HEADING_BG)
+        actions.pack(fill=tk.X)
+
+        def update_preview(*_args) -> None:
+            preview_name = name_var.get().strip() or "Preview"
+            try:
+                parsed_color = self._color_to_hex(color_var.get())
+            except ValueError as exc:
+                preview_button.config(
+                    text=preview_name,
+                    bg=self.CARD_BG,
+                    fg=self.FG,
+                    activebackground=self.CARD_BG,
+                    activeforeground=self.FG,
+                )
+                preview_text.set(str(exc))
+                preview_label.config(fg="#f38ba8")
+                return
+
+            preview_button.config(
+                text=preview_name,
+                bg=parsed_color,
+                fg=self._label_text_color(parsed_color),
+                activebackground=parsed_color,
+                activeforeground=self._label_text_color(parsed_color),
+            )
+            preview_text.set("Use #hex, rgb(), or okclh().")
+            preview_label.config(fg=self.MUTED_FG)
+
+        def select_preset(color_value: str) -> None:
+            color_var.set(color_value)
+            update_preview()
+
+        for preset_name, preset_color in self.LABEL_PRESETS:
+            tk.Button(
+                preset_frame,
+                text=preset_name,
+                font=("Segoe UI", 8, "bold"),
+                relief=tk.FLAT,
+                bd=0,
+                padx=8,
+                pady=3,
+                bg=preset_color,
+                fg=self._label_text_color(preset_color),
+                activebackground=preset_color,
+                activeforeground=self._label_text_color(preset_color),
+                cursor="hand2",
+                command=lambda value=preset_color: select_preset(value),
+            ).pack(side=tk.LEFT, padx=(0, 6))
+
+        def save_label() -> None:
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showerror(
+                    "Process Label",
+                    "Enter a label name.",
+                    parent=dialog,
+                )
+                name_entry.focus_set()
+                return
+            try:
+                self._color_to_hex(color_var.get())
+            except ValueError as exc:
+                messagebox.showerror("Process Label", str(exc), parent=dialog)
+                color_entry.focus_set()
+                return
+
+            self._set_process_label(directory, name, color_var.get().strip())
+            self._refresh_process_label_views(directory)
+            dialog.destroy()
+
+        def remove_label() -> None:
+            self._remove_process_label(directory)
+            self._refresh_process_label_views(directory)
+            dialog.destroy()
+
+        ttk.Button(actions, text="Save", command=save_label).pack(side=tk.RIGHT)
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(
+            side=tk.RIGHT, padx=(0, 8)
+        )
+        if existing is not None:
+            ttk.Button(actions, text="Delete", command=remove_label).pack(side=tk.LEFT)
+
+        name_var.trace_add("write", update_preview)
+        color_var.trace_add("write", update_preview)
+        dialog.bind("<Return>", lambda _event: save_label())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + max((self.root.winfo_width() - dialog.winfo_width()) // 2, 20)
+        y = self.root.winfo_rooty() + max((self.root.winfo_height() - dialog.winfo_height()) // 2, 20)
+        dialog.geometry(f"+{x}+{y}")
+        update_preview()
+        name_entry.focus_set()
+        dialog.wait_window()
+
+    def _remove_label_via_button(self, pid: int) -> None:
+        process = self._process_lookup.get(pid)
+        if process is None:
+            return
+        directory = self._normalize_directory_key(process.cwd)
+        if not directory:
+            return
+        self._remove_process_label(directory)
+        self._refresh_process_label_views(directory)
+
     # ---- Refresh logic ----
 
     def _schedule_refresh(self):
@@ -1564,6 +2059,41 @@ class AIManagerApp:
         )
         status_badge.pack(side=tk.RIGHT, padx=(8, 0), anchor="n")
 
+        label_row = tk.Frame(content, bg=self.CARD_BG)
+        label_row.pack(fill=tk.X, pady=(6, 0))
+
+        label_button = tk.Button(
+            label_row,
+            text="",
+            font=("Segoe UI", 8, "bold"),
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=3,
+            cursor="hand2",
+            command=lambda target_pid=p.pid: self._open_label_editor(target_pid),
+        )
+        label_button.pack(side=tk.LEFT)
+        self._mark_card_control(label_button)
+
+        label_delete_button = tk.Button(
+            label_row,
+            text="x",
+            font=("Segoe UI", 8, "bold"),
+            relief=tk.FLAT,
+            bd=0,
+            width=2,
+            padx=0,
+            pady=3,
+            cursor="hand2",
+            bg=self.CHIP_BG,
+            fg=self.FG,
+            activebackground=self.SELECT_BG,
+            activeforeground="#ffffff",
+            command=lambda target_pid=p.pid: self._remove_label_via_button(target_pid),
+        )
+        self._mark_card_control(label_delete_button)
+
         meta = tk.Frame(content, bg=self.CARD_BG, cursor="hand2")
         meta.pack(fill=tk.X, pady=(6, 0))
 
@@ -1622,6 +2152,8 @@ class AIManagerApp:
             "accent_bar": accent_bar,
             "status_badge": status_badge,
             "title_label": title_label,
+            "label_button": label_button,
+            "label_delete_button": label_delete_button,
             "pid_value": pid_value,
             "cpu_value": cpu_value,
             "cwd_value": cwd_value,
@@ -1657,7 +2189,44 @@ class AIManagerApp:
         value.pack(fill=tk.X, expand=True, pady=(1, 0))
         return value
 
+    @staticmethod
+    def _mark_card_control(widget: tk.Widget) -> None:
+        setattr(widget, "_card_control", True)
+        widget.bind("<Double-Button-1>", lambda _event: "break")
+
+    def _update_label_controls(self, bundle: dict[str, object], p: CLIProcess) -> None:
+        label_button = bundle["label_button"]
+        label_delete_button = bundle["label_delete_button"]
+        saved_label = self._label_for_directory(p.cwd)
+
+        if saved_label is None:
+            label_button.config(
+                text="+ Label",
+                bg=self.CARD_BG,
+                fg=self.MUTED_FG,
+                activebackground="#34374b",
+                activeforeground=self.FG,
+                highlightthickness=1,
+                highlightbackground="#585b70",
+            )
+            label_delete_button.pack_forget()
+            return
+
+        parsed_color = self._color_to_hex(saved_label["color"])
+        text_color = self._label_text_color(parsed_color)
+        label_button.config(
+            text=saved_label["name"],
+            bg=parsed_color,
+            fg=text_color,
+            activebackground=parsed_color,
+            activeforeground=text_color,
+            highlightthickness=0,
+        )
+        label_delete_button.pack(side=tk.LEFT, padx=(6, 0))
+
     def _bind_card_activation(self, widget: tk.Widget, pid: int) -> None:
+        if getattr(widget, "_card_control", False):
+            return
         widget.bind(
             "<Double-Button-1>",
             lambda _event, target_pid=pid: self._activate_pid(target_pid),
@@ -1677,6 +2246,7 @@ class AIManagerApp:
             fg=badge_fg,
         )
         bundle["title_label"].config(text=p.name)
+        self._update_label_controls(bundle, p)
         bundle["pid_value"].config(text=str(p.pid))
         bundle["cpu_value"].config(text=f"{p.cpu_percent:.1f}")
         bundle["cwd_value"].config(text=p.cwd or "(unknown)")
