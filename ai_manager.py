@@ -118,10 +118,13 @@ NON_INTERACTIVE_CMDLINE_PATTERNS = (
 
 # Windows API constants
 SW_RESTORE = 9
+SW_SHOW = 5
 GW_OWNER = 4
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_APPWINDOW = 0x00040000
+GA_ROOT = 2
+GA_ROOTOWNER = 3
 
 # ---------------------------------------------------------------------------
 # Win32 helpers (pure ctypes – no PowerShell)
@@ -144,6 +147,8 @@ IsIconic = user32.IsIconic
 BringWindowToTop = user32.BringWindowToTop
 GetWindow = user32.GetWindow
 GetWindowLongW = user32.GetWindowLongW
+GetAncestor = user32.GetAncestor
+SetActiveWindow = user32.SetActiveWindow
 
 # For AllowSetForegroundWindow workaround
 AttachThreadInput = user32.AttachThreadInput
@@ -196,8 +201,23 @@ def activate_window(hwnd: int) -> None:
 
     Uses multiple strategies to bypass Windows' foreground-lock restrictions.
     """
-    if IsIconic(hwnd):
-        ShowWindow(hwnd, SW_RESTORE)
+    targets: list[int] = []
+    for flag in (GA_ROOTOWNER, GA_ROOT):
+        try:
+            target = int(GetAncestor(hwnd, flag))
+        except Exception:
+            target = 0
+        if target and target not in targets:
+            targets.append(target)
+    if hwnd not in targets:
+        targets.append(hwnd)
+
+    # Restore the outermost window first so minimized terminal windows reappear.
+    for target in targets:
+        if IsIconic(target):
+            ShowWindow(target, SW_RESTORE)
+        else:
+            ShowWindow(target, SW_SHOW)
 
     # Strategy: simulate an Alt key press to unlock SetForegroundWindow,
     # then call SetForegroundWindow.  This reliably bypasses the restriction
@@ -208,9 +228,16 @@ def activate_window(hwnd: int) -> None:
     keybd_event = user32.keybd_event
 
     keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY, 0)       # Alt down
-    SetForegroundWindow(hwnd)
-    keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)  # Alt up
-    BringWindowToTop(hwnd)
+    try:
+        for target in targets:
+            SetForegroundWindow(target)
+            BringWindowToTop(target)
+            try:
+                SetActiveWindow(target)
+            except Exception:
+                pass
+    finally:
+        keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)  # Alt up
 
 
 # ---------------------------------------------------------------------------

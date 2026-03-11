@@ -14,11 +14,13 @@ A Windows desktop application that monitors AI CLI tools (Claude Code / Codex CL
 | Automatic process detection | Automatically detects AI CLI processes running on Windows and WSL |
 | Status display | Shows each process state as "Processing" or "Waiting for input" |
 | Color-coded status | Green background for waiting, red background for processing — status is visible at a glance |
-| Window switching | Double-click a process in the list to bring its terminal window to the foreground |
+| Display modes | Supports `landscape`, `portrait`, and `minimized` modes. Size and position are stored independently for each mode |
+| Label management | Saves a label name and color per working directory. Labels can be edited from the `Label` column in `landscape` mode and the `+ Label` button in `portrait` mode |
+| Window switching | Double-click a process row or card to bring its terminal window to the foreground. The app also attempts to restore minimized terminal windows |
 | Working directory display | Shows the directory each CLI is running in, making it easy to distinguish multiple instances |
 | Terminal type display | Shows the terminal type such as Windows Terminal, PowerShell, Command Prompt, etc. |
-| Always on Top | "Always on Top" checkbox keeps the window above all others (setting is persisted automatically) |
-| 1-second auto-refresh | Process information is refreshed automatically every second |
+| Always on Top | The `Top` checkbox keeps the window above all others (setting is persisted automatically) |
+| 1-second auto-refresh | In `landscape` and `portrait`, process information is refreshed every second. In `minimized`, refresh pauses and runs immediately on `Restore` |
 
 ## Supported CLIs
 
@@ -62,6 +64,8 @@ python ai_manager.py
 
 ### Screen Layout
 
+The visible controls differ by display mode. The image below is one example.
+
 ![](./images/00001.jpg)
 
 ### Column Descriptions
@@ -72,6 +76,7 @@ python ai_manager.py
 | PID | Process ID |
 | Status | `▶ Processing` (busy) or `⏸ Waiting for input` (idle) |
 | CPU % | Combined CPU usage across the entire process tree |
+| Label | Label name. Shows `+ Label` when unset, or `No Label` when no directory is available (`landscape` mode only) |
 | Working Directory | The directory where the CLI is running |
 | Terminal | Terminal type (Windows Terminal, PowerShell, etc.) |
 
@@ -79,26 +84,39 @@ python ai_manager.py
 
 | Action | Behavior |
 |--------|----------|
-| Double-click / Enter | Brings the selected CLI's terminal window to the foreground |
+| `Portrait` / `Wide` button | Switches between `landscape` and `portrait`. Each mode remembers its own size and position |
+| `Minimize` button | Switches to `minimized`, a compact view that only shows the `Restore` button |
+| `Restore` button | Returns from `minimized` to the previous display mode and position, then refreshes immediately |
+| `Label` column (`landscape`) | Click a label cell to add or edit a label |
+| `+ Label` button (`portrait`) | Click the `+ Label` button on a card to add or edit a label |
+| Double-click / Enter | Brings the selected CLI's terminal window to the foreground and attempts to restore minimized terminal windows |
 | Refresh button | Manually refreshes the process list |
-| Always on Top checkbox | When checked, the AI Manager window stays above all other windows |
+| Top checkbox | When checked, the AI Manager window stays above all other windows |
+
+Labels cannot be saved for processes whose working directory is unavailable.
 
 ### Status Detection Logic
 
-Status is determined by two signals. If either exceeds its threshold, the process is marked as "Processing".
+On both Windows and WSL, status is determined by two signals. If either exceeds its threshold, the process is marked as `Processing`; otherwise it is `Waiting for input`.
 
 | Signal | Threshold | Description |
 |--------|-----------|-------------|
 | Tree CPU | 2.0% | Combined CPU usage of the process and all its child processes |
-| I/O Delta | 1,000 bytes | Change in disk I/O since the last scan (detects API communication, etc.) |
+| I/O Delta | 1,000 bytes | Total I/O growth since the previous scan |
+
+- On Windows, CPU and I/O are read from the process tree via `psutil`
+- On WSL, CPU and I/O are derived from `/proc` CPU ticks and I/O counters
 
 ### Persisted Settings
 
-The following settings are saved and restored across application restarts.
+The following settings are saved in `settings.json` and restored across application restarts.
 
 | Setting | Stored in |
 |---------|-----------|
-| Always on Top | `settings.json` |
+| Top checkbox state | `settings.json` (`always_on_top`) |
+| Last normal display mode | `settings.json` (`layout_mode`) |
+| Window size and position for each mode | `settings.json` (`window_geometries.landscape` / `portrait` / `minimized`) |
+| Label name and color per working directory | `settings.json` (`process_labels`) |
 
 ## File Structure
 
@@ -118,8 +136,8 @@ AI-Manager/
 
 - Built with **pure Python + tkinter + ctypes**. PowerShell is not used at all.
 - **Win32 API (ctypes)**: Uses `EnumWindows`, `SetForegroundWindow`, `AttachConsole`, `GetConsoleWindow`, and other APIs to detect and activate windows.
-- **WSL support**: Detects processes inside WSL using `wsl --list` and `wsl -d <distro> -- ps aux`. Working directories are resolved via batched `readlink` calls.
-- **Window switching**: Even in multi-tab environments like Windows Terminal, the correct tab HWND is resolved via `AttachConsole`/`GetConsoleWindow`, and Alt key simulation ensures reliable foreground activation.
+- **WSL support**: Detects processes inside WSL using `wsl --list` and `wsl -d <distro> -- ps -eo ...`. Working directories are resolved via batched `readlink` calls.
+- **Window switching**: Even in multi-tab environments like Windows Terminal, the correct tab HWND is resolved via `AttachConsole`/`GetConsoleWindow`, and the app restores parent windows when needed before bringing them to the foreground.
 
 ## Verification Status
 
