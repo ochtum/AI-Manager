@@ -14,13 +14,13 @@ A Windows desktop application that monitors AI CLI tools (Claude Code / Codex CL
 | Automatic process detection | Automatically detects AI CLI processes running on Windows and WSL |
 | Status display | Shows each process state as "Processing" or "Waiting for input" |
 | Color-coded status | Green background for waiting, red background for processing — status is visible at a glance |
-| Display modes | Supports `landscape`, `portrait`, and `minimized` modes. Size and position are stored independently for each mode |
-| Label management | Saves a label name and color per working directory. Labels can be edited from the `Label` column in `landscape` mode and the `+ Label` button in `portrait` mode |
+| Display modes | Supports the `Wide` view, the `Portrait` view, and the compact `Restore`-only view entered via `Minimize`. Size and position are stored independently for each view |
+| Label management | Saves a label name and color per working directory. Labels can be edited from the `Label` column in `Wide` view and the `+ Label` button in `Portrait` view |
 | Window switching | Double-click a process row or card to bring its terminal window to the foreground. The app also attempts to restore minimized terminal windows |
 | Working directory display | Shows the directory each CLI is running in, making it easy to distinguish multiple instances |
 | Terminal type display | Shows the terminal type such as Windows Terminal, PowerShell, Command Prompt, etc. |
 | Always on Top | The `Top` checkbox keeps the window above all others (setting is persisted automatically) |
-| 1-second auto-refresh | In `landscape` and `portrait`, process information is refreshed every second. In `minimized`, refresh pauses and runs immediately on `Restore` |
+| 1-second auto-refresh | In `Wide` and `Portrait`, process information is refreshed every second. In the compact view entered via `Minimize`, refresh pauses and runs immediately on `Restore` |
 
 ## Supported CLIs
 
@@ -76,7 +76,7 @@ The visible controls differ by display mode. The image below is one example.
 | PID | Process ID |
 | Status | `▶ Processing` (busy) or `⏸ Waiting for input` (idle) |
 | CPU % | Combined CPU usage across the entire process tree |
-| Label | Label name. Shows `+ Label` when unset, or `No Label` when no directory is available (`landscape` mode only) |
+| Label | Label name. Shows `+ Label` when unset, or `No Label` when no directory is available (`Wide` view only) |
 | Working Directory | The directory where the CLI is running |
 | Terminal | Terminal type (Windows Terminal, PowerShell, etc.) |
 
@@ -84,11 +84,11 @@ The visible controls differ by display mode. The image below is one example.
 
 | Action | Behavior |
 |--------|----------|
-| `Portrait` / `Wide` button | Switches between `landscape` and `portrait`. Each mode remembers its own size and position |
-| `Minimize` button | Switches to `minimized`, a compact view that only shows the `Restore` button |
-| `Restore` button | Returns from `minimized` to the previous display mode and position, then refreshes immediately |
-| `Label` column (`landscape`) | Click a label cell to add or edit a label |
-| `+ Label` button (`portrait`) | Click the `+ Label` button on a card to add or edit a label |
+| `Portrait` / `Wide` button | Switches between `Wide` and `Portrait`. Each view remembers its own size and position |
+| `Minimize` button | Switches to a compact view that only shows the `Restore` button |
+| `Restore` button | Returns from the compact `Minimize` view to the previous display and position, then refreshes immediately |
+| `Label` column (`Wide` view) | Click a label cell to add or edit a label |
+| `+ Label` button (`Portrait` view) | Click the `+ Label` button on a card to add or edit a label |
 | Double-click / Enter | Brings the selected CLI's terminal window to the foreground and attempts to restore minimized terminal windows |
 | Refresh button | Manually refreshes the process list |
 | Top checkbox | When checked, the AI Manager window stays above all other windows |
@@ -114,8 +114,8 @@ The following settings are saved in `settings.json` and restored across applicat
 | Setting | Stored in |
 |---------|-----------|
 | Top checkbox state | `settings.json` (`always_on_top`) |
-| Last normal display mode | `settings.json` (`layout_mode`) |
-| Window size and position for each mode | `settings.json` (`window_geometries.landscape` / `portrait` / `minimized`) |
+| Last normal display mode (`Wide` or `Portrait`) | `settings.json` (`layout_mode`) |
+| Window size and position for each view (`Wide` / `Portrait` / compact `Minimize` view) | `settings.json` (`window_geometries.landscape` / `portrait` / `minimized`) |
 | Label name and color per working directory | `settings.json` (`process_labels`) |
 
 ## File Structure
