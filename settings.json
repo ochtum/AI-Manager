@@ -3,25 +3,13 @@
   "layout_mode": "portrait",
   "window_geometries": {
     "landscape": "1200x420+2611+572",
-    "portrait": "280x760+3516+178",
-    "minimized": "220x90+2291+96"
+    "portrait": "280x760+3417+213",
+    "minimized": "220x90+1177+131"
   },
   "process_labels": {
     "/mnt/d/source/AI-Manager": {
       "name": "example",
       "color": "#a6e3a1"
-    },
-    "/mnt/c/Data/WebSite/20260310": {
-      "name": "jQuery廃止対応",
-      "color": "#a6e3a1"
-    },
-    "/mnt/c/junichi.takeda/source/ClaudeSessionsViewer": {
-      "name": "ClaudeSessionViewer",
-      "color": "#cba6f7"
-    },
-    "/mnt/c/junichi.takeda/source/AI-Manager": {
-      "name": "AI CLI Process Manger",
-      "color": "#cba6f7"
     }
   }
 }

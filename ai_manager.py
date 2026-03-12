@@ -1338,7 +1338,14 @@ class AIManagerApp:
 
     def _retint_card_background(self, widget: tk.Widget, target_bg: str) -> None:
         try:
-            if str(widget.cget("bg")) == self.CARD_BG:
+            current_bg = str(widget.cget("bg")).lower()
+            if current_bg in {
+                self.CARD_BG.lower(),
+                "#1a3a2a",  # waiting (current)
+                "#3a1a1a",  # processing (current)
+                "#1f2a24",  # waiting (legacy)
+                "#2b2029",  # processing (legacy)
+            }:
                 widget.config(bg=target_bg)
         except tk.TclError:
             pass
@@ -2115,8 +2122,8 @@ class AIManagerApp:
     @staticmethod
     def _status_palette(tag: str) -> tuple[str, str, str, str]:
         if tag == "processing":
-            return ("#f38ba8", "#2b2029", "#6c2742", "#ffffff")
-        return ("#a6e3a1", "#1f2a24", "#2f6549", "#ffffff")
+            return ("#f38ba8", "#3a1a1a", "#6c2742", "#ffffff")
+        return ("#a6e3a1", "#1a3a2a", "#2f6549", "#ffffff")
 
     def _update_views(self, procs: list[CLIProcess]):
         self._processes = procs
