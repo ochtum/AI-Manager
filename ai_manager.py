@@ -14,6 +14,7 @@ import shlex
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import messagebox, ttk
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -984,6 +985,8 @@ class AIManagerApp:
     SELECT_BG = "#45475a"
     CARD_BG = "#24273a"
     CHIP_BG = "#181825"
+    UNLABELED_CHIP_BG = "#25283d"
+    UNLABELED_CHIP_ACTIVE_BG = "#353a57"
     LABEL_PRESETS = [
         ("Red", "#f38ba8"),
         ("Blue", "#89b4fa"),
@@ -991,6 +994,13 @@ class AIManagerApp:
         ("Yellow", "#f9e2af"),
         ("Purple", "#cba6f7"),
     ]
+    LABEL_FONT_CANDIDATES = (
+        "Yu Gothic UI",
+        "Meiryo UI",
+        "Meiryo",
+        "MS UI Gothic",
+        "Segoe UI",
+    )
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -1027,6 +1037,7 @@ class AIManagerApp:
             layout_mode = "landscape"
         self._layout_var = tk.StringVar(value=layout_mode)
         self._current_layout = layout_mode
+        self._label_font_family = self._select_font_family(self.LABEL_FONT_CANDIDATES)
 
         self._build_ui()
         self._apply_layout(initial=True)
@@ -1297,6 +1308,22 @@ class AIManagerApp:
         else:
             self._settings.pop("process_labels", None)
         self._write_settings(self._settings)
+
+    def _select_font_family(self, candidates: tuple[str, ...]) -> str:
+        available = {family.lower() for family in tkfont.families(self.root)}
+        for family in candidates:
+            if family.lower() in available:
+                return family
+        return "TkDefaultFont"
+
+    def _retint_card_background(self, widget: tk.Widget, target_bg: str) -> None:
+        try:
+            if str(widget.cget("bg")) == self.CARD_BG:
+                widget.config(bg=target_bg)
+        except tk.TclError:
+            pass
+        for child in widget.winfo_children():
+            self._retint_card_background(child, target_bg)
 
     @staticmethod
     def _hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -1802,7 +1829,7 @@ class AIManagerApp:
         tk.Label(
             frame,
             text="Directory",
-            font=("Segoe UI", 8, "bold"),
+            font=(self._label_font_family, 8, "bold"),
             bg=self.HEADING_BG,
             fg=self.MUTED_FG,
             anchor="w",
@@ -1884,7 +1911,7 @@ class AIManagerApp:
         preview_button = tk.Button(
             frame,
             text="Preview",
-            font=("Segoe UI", 8, "bold"),
+            font=(self._label_font_family, 8, "bold"),
             relief=tk.FLAT,
             bd=0,
             padx=10,
@@ -2055,10 +2082,10 @@ class AIManagerApp:
         )
 
     @staticmethod
-    def _status_palette(tag: str) -> tuple[str, str, str]:
+    def _status_palette(tag: str) -> tuple[str, str, str, str]:
         if tag == "processing":
-            return ("#f38ba8", "#3a1a1a", "#f38ba8")
-        return ("#a6e3a1", "#1a3a2a", "#a6e3a1")
+            return ("#f38ba8", "#2b2029", "#6c2742", "#ffffff")
+        return ("#a6e3a1", "#1f2a24", "#2f6549", "#ffffff")
 
     def _update_views(self, procs: list[CLIProcess]):
         self._processes = procs
@@ -2127,7 +2154,7 @@ class AIManagerApp:
             if button is None:
                 button = tk.Button(
                     self.tree_frame,
-                    font=("Segoe UI", 8, "bold"),
+                    font=(self._label_font_family, 8, "bold"),
                     relief=tk.FLAT,
                     bd=0,
                     padx=10,
@@ -2188,7 +2215,7 @@ class AIManagerApp:
         self._on_portrait_content_configure()
 
     def _create_portrait_card(self, p: CLIProcess) -> dict[str, object]:
-        accent, badge_bg, badge_fg = self._status_palette(self._status_tag(p))
+        accent, status_bg, badge_bg, badge_fg = self._status_palette(self._status_tag(p))
 
         card = tk.Frame(
             self.portrait_cards_frame,
@@ -2204,16 +2231,16 @@ class AIManagerApp:
         content = tk.Frame(card, bg=self.CARD_BG, padx=8, pady=8, cursor="hand2")
         content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        header = tk.Frame(content, bg=self.CARD_BG, cursor="hand2")
+        header = tk.Frame(content, bg=status_bg, cursor="hand2")
         header.pack(fill=tk.X)
 
-        cli_frame = tk.Frame(header, bg=self.CARD_BG, cursor="hand2")
+        cli_frame = tk.Frame(header, bg=status_bg, cursor="hand2")
         cli_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
         title_label = tk.Label(
             cli_frame,
             text="",
             font=("Segoe UI", 10, "bold"),
-            bg=self.CARD_BG,
+            bg=status_bg,
             fg=self.FG,
             anchor="w",
             justify="left",
@@ -2224,11 +2251,14 @@ class AIManagerApp:
         status_badge = tk.Label(
             header,
             text="",
-            font=("Segoe UI", 8, "bold"),
+            font=("Segoe UI", 9, "bold"),
             bg=badge_bg,
             fg=badge_fg,
-            padx=8,
-            pady=3,
+            padx=10,
+            pady=4,
+            highlightthickness=1,
+            highlightbackground=accent,
+            highlightcolor=accent,
             cursor="hand2",
         )
         status_badge.pack(side=tk.RIGHT, padx=(8, 0), anchor="n")
@@ -2239,7 +2269,7 @@ class AIManagerApp:
         label_button = tk.Button(
             label_row,
             text="",
-            font=("Segoe UI", 8, "bold"),
+            font=(self._label_font_family, 8, "bold"),
             relief=tk.FLAT,
             bd=0,
             padx=10,
@@ -2334,6 +2364,8 @@ class AIManagerApp:
         bundle = {
             "frame": card,
             "accent_bar": accent_bar,
+            "header": header,
+            "cli_frame": cli_frame,
             "status_badge": status_badge,
             "title_label": title_label,
             "label_button": label_button,
@@ -2466,14 +2498,15 @@ class AIManagerApp:
         button.config(
             text="+ Label",
             state=tk.NORMAL,
-            bg=self.CHIP_BG,
-            fg=self.FG,
-            activebackground=self.SELECT_BG,
-            activeforeground="#ffffff",
+            bg=self.UNLABELED_CHIP_BG,
+            fg=self.MUTED_FG,
+            activebackground=self.UNLABELED_CHIP_ACTIVE_BG,
+            activeforeground=self.FG,
             disabledforeground=self.SUBTLE_FG,
             highlightthickness=1,
-            highlightbackground="#7f849c",
+            highlightbackground="#72789c",
             highlightcolor="#89b4fa",
+            font=(self._label_font_family, 8, "normal"),
         )
 
     def _set_saved_label_button_style(self, button: tk.Button, name: str, color: str) -> None:
@@ -2488,6 +2521,7 @@ class AIManagerApp:
             activeforeground=text_color,
             disabledforeground=text_color,
             highlightthickness=0,
+            font=(self._label_font_family, 8, "bold"),
         )
 
     def _update_label_controls(self, bundle: dict[str, object], p: CLIProcess) -> None:
@@ -2520,15 +2554,20 @@ class AIManagerApp:
 
     def _update_portrait_card(self, bundle: dict[str, object], p: CLIProcess) -> None:
         tag = self._status_tag(p)
-        accent, badge_bg, badge_fg = self._status_palette(tag)
-        bundle["frame"].config(highlightbackground=accent)
+        accent, status_bg, badge_bg, badge_fg = self._status_palette(tag)
+        bundle["frame"].config(bg=status_bg, highlightbackground=accent)
         bundle["accent_bar"].config(bg=accent)
+        bundle["header"].config(bg=status_bg)
+        bundle["cli_frame"].config(bg=status_bg)
         bundle["status_badge"].config(
             text=self._status_text(p),
             bg=badge_bg,
             fg=badge_fg,
+            highlightbackground=accent,
+            highlightcolor=accent,
         )
-        bundle["title_label"].config(text=p.name)
+        bundle["title_label"].config(text=p.name, bg=status_bg)
+        self._retint_card_background(bundle["frame"], status_bg)
         self._update_label_controls(bundle, p)
         bundle["pid_value"].config(text=str(p.pid))
         bundle["cpu_value"].config(text=f"{p.cpu_percent:.1f}")
