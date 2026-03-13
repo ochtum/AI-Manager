@@ -113,6 +113,7 @@ On both Windows and WSL, status is determined by two signals. If either exceeds 
 ### Persisted Settings
 
 The following settings are saved in `settings.json` and restored across application restarts.
+If `settings.json` is missing, unreadable as JSON, or has an invalid settings structure, the app recreates it on startup using only managed settings, preserving valid values and filling missing ones with system defaults.
 
 | Setting | Stored in |
 |---------|-----------|

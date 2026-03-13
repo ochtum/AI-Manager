@@ -1257,12 +1257,74 @@ class AIManagerApp:
     # ---- Always-on-top ----
 
     @staticmethod
-    def _load_settings() -> dict:
+    def _default_window_geometries() -> dict[str, str]:
+        return {
+            "landscape": LANDSCAPE_GEOMETRY,
+            "portrait": PORTRAIT_GEOMETRY,
+            "minimized": MINIMIZED_GEOMETRY,
+        }
+
+    @classmethod
+    def _default_settings(cls) -> dict:
+        return {
+            "always_on_top": False,
+            "layout_mode": "landscape",
+            "window_geometries": cls._default_window_geometries(),
+            "process_labels": {},
+        }
+
+    @classmethod
+    def _normalize_settings(cls, data) -> dict:
+        defaults = cls._default_settings()
+        if not isinstance(data, dict):
+            return defaults
+
+        normalized: dict[str, object] = {}
+
+        always_on_top = data.get("always_on_top", defaults["always_on_top"])
+        normalized["always_on_top"] = (
+            always_on_top if isinstance(always_on_top, bool) else defaults["always_on_top"]
+        )
+
+        layout_mode = data.get("layout_mode", defaults["layout_mode"])
+        if isinstance(layout_mode, str):
+            layout_mode = layout_mode.strip().lower()
+        else:
+            layout_mode = defaults["layout_mode"]
+        if layout_mode not in {"landscape", "portrait"}:
+            layout_mode = defaults["layout_mode"]
+        normalized["layout_mode"] = layout_mode
+
+        window_geometries = cls._default_window_geometries()
+        window_geometries.update(cls._load_window_geometries(data.get("window_geometries")))
+        normalized["window_geometries"] = window_geometries
+
+        normalized["process_labels"] = cls._load_process_labels(data.get("process_labels"))
+        return normalized
+
+    @classmethod
+    def _load_settings(cls) -> dict:
+        raw_data = None
+        should_write = False
+
         try:
-            data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
+            raw_text = _SETTINGS_FILE.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            should_write = True
         except Exception:
-            return {}
+            should_write = True
+        else:
+            try:
+                raw_data = json.loads(raw_text)
+            except Exception:
+                should_write = True
+
+        normalized = cls._normalize_settings(raw_data)
+        if raw_data != normalized:
+            should_write = True
+        if should_write:
+            cls._write_settings(normalized)
+        return normalized
 
     @staticmethod
     def _write_settings(data: dict) -> None:
@@ -1323,10 +1385,7 @@ class AIManagerApp:
         return result
 
     def _persist_process_labels(self) -> None:
-        if self._process_labels:
-            self._settings["process_labels"] = dict(self._process_labels)
-        else:
-            self._settings.pop("process_labels", None)
+        self._settings["process_labels"] = dict(self._process_labels)
         self._write_settings(self._settings)
 
     def _select_font_family(self, candidates: tuple[str, ...]) -> str:
