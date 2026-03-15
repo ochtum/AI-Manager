@@ -3,7 +3,7 @@
   <a href="README.md"><img src="https://img.shields.io/badge/日本語 モード-red.svg" alt="日本語"></a>
 </p>
 
-# AI Manager - AI CLI Process Monitor
+# AI CLI Watcher - AI CLI Process Monitor
 
 A Windows desktop application that monitors AI CLI tools (Claude Code / Codex CLI / GitHub Copilot CLI) in real time and displays their operational status.
 
@@ -14,13 +14,13 @@ A Windows desktop application that monitors AI CLI tools (Claude Code / Codex CL
 | Automatic process detection | Automatically detects AI CLI processes running on Windows and WSL |
 | Status display | Shows each process state as "Processing" or "Waiting for input" |
 | Color-coded status | Green background for waiting, red background for processing — status is visible at a glance |
-| Display modes | Supports the `Wide` (horizontal list) view, the `Portrait` (vertical cards) view, and the `Minimize` (minimized) view. Size and position are stored independently for each view |
-| Label management | Saves a label name and color per working directory. Labels can be edited from the `Label` column in `Wide` view and the `+ Label` button in `Portrait` view |
+| Display modes | Supports the `Table` (list) view, the `Cards` (vertical cards) view, and the `Minimize` (minimized) view. Size and position are stored independently for each view |
+| Label management | Saves a label name and color per working directory. Labels can be edited from the `Label` column in `Table` view and the `+ Label` button in `Cards` view |
 | Window switching | Double-click a process row or card to bring its terminal window to the foreground. The app also attempts to restore minimized terminal windows |
 | Working directory display | Shows the directory each CLI is running in, making it easy to distinguish multiple instances |
 | Terminal type display | Shows the terminal type such as Windows Terminal, PowerShell, Command Prompt, etc. |
-| Always on Top | The `Top` checkbox keeps the window above all others (setting is persisted automatically) |
-| 1-second auto-refresh | In `Wide` and `Portrait`, process information is refreshed every second. In `Minimize` view, refresh pauses and runs immediately on `Restore` |
+| Always on Top | The `Always on Top` checkbox keeps the window above all others (setting is persisted automatically) |
+| 2-second auto-refresh | In `Table` and `Cards`, process information is refreshed every 2 seconds. In `Minimize` view, refresh pauses and runs immediately on `Restore` |
 
 ## Supported CLIs
 
@@ -52,12 +52,12 @@ pip install -r requirements.txt
 
 #### Launch from batch file (recommended)
 
-Double-click `scripts\windows\launch_ai_manager.bat`.
+Double-click `scripts\windows\launch_ai_cli_watcher.bat`.
 
 #### Launch from command line
 
 ```
-python ai_manager.py
+python ai_cli_watcher.py
 ```
 
 ## Usage
@@ -68,8 +68,8 @@ The visible controls differ by display mode. The following images show each mode
 
 | Display Mode | Sample Image |
 |--------------|--------------|
-| `Wide` | ![](./images/00001.jpg) |
-| `Portrait` | ![](./images/00002.jpg) |
+| `Table` | ![](./images/00001.jpg) |
+| `Cards` | ![](./images/00002.jpg) |
 | `Minimize` | ![](./images/00003.jpg) |
 
 ### Item Descriptions
@@ -80,21 +80,21 @@ The visible controls differ by display mode. The following images show each mode
 | PID | Process ID |
 | Status | `▶ Processing` (busy) or `⏸ Waiting for input` (idle) |
 | CPU % | Combined CPU usage across the entire process tree |
-| Label | Label name. In `Wide`, it appears in the Label field and shows `+ Label` when unset or `No Label` when no directory is available. In `Portrait`, it appears as the `+ Label` button or as the saved label on each card |
-| Working Directory | The directory where the CLI is running |
+| Label | Label name. In `Table`, it appears in the Label field and shows `+ Label` when unset or `No Label` when no directory is available. In `Cards`, it appears as the `+ Label` button or as the saved label on each card |
+| Directory | The directory where the CLI is running. Long paths are shortened to keep the tail visible |
 | Terminal | Terminal type (Windows Terminal, PowerShell, etc.) |
 
 ### Controls
 
 | Action | Behavior |
 |--------|----------|
-| `Portrait` / `Wide` button | Switches between `Wide` and `Portrait`. Each view remembers its own size and position |
+| `Cards` / `Table` button | Switches between `Table` and `Cards`. Each view remembers its own size and position |
 | `Minimize` button | Switches to a compact view that only shows the `Restore` button |
 | `Restore` button | Returns from the compact `Minimize` view to the previous display and position, then refreshes immediately |
 | `+ Label` button | Click `+ Label` to add or edit a label |
 | Double-click / Enter | Brings the selected CLI's terminal window to the foreground and attempts to restore minimized terminal windows |
-| Refresh button | Manually refreshes the process list |
-| Top checkbox | When checked, the AI Manager window stays above all other windows |
+| `Auto refresh: 2s` indicator | The process list refreshes automatically every 2 seconds |
+| `Always on Top` checkbox | When checked, the AI CLI Watcher window stays above all other windows |
 
 Labels cannot be saved for processes whose working directory is unavailable.
 
@@ -117,23 +117,23 @@ If `settings.json` is missing, unreadable as JSON, or has an invalid settings st
 
 | Setting | Stored in |
 |---------|-----------|
-| Top checkbox state | `settings.json` (`always_on_top`) |
-| Last normal display mode (`Wide` or `Portrait`) | `settings.json` (`layout_mode`) |
-| Window size and position for each view (`Wide` / `Portrait` / `Minimize`) | `settings.json` (`window_geometries.landscape` / `portrait` / `minimized`) |
+| `Always on Top` checkbox state | `settings.json` (`always_on_top`) |
+| Last normal display mode (`Table` or `Cards`) | `settings.json` (`layout_mode`) |
+| Window size and position for each view (`Table` / `Cards` / `Minimize`) | `settings.json` (`window_geometries.landscape` / `portrait` / `minimized`) |
 | Label name and color per working directory | `settings.json` (`process_labels`) |
 
 ## File Structure
 
 ```
-AI-Manager/
-├── ai_manager.py          # Main application
-├── requirements.txt        # Dependencies (psutil)
-├── settings.json           # User settings (auto-generated)
+AI-CLI-Watcher/
+├── ai_cli_watcher.py        # Main application
+├── requirements.txt         # Dependencies (psutil)
+├── settings.json            # User settings (auto-generated)
 ├── .gitignore
 ├── scripts/
 │   └── windows/
-│       └── launch_ai_manager.bat   # Launch script
-└── README.md               # Documentation (Japanese)
+│       └── launch_ai_cli_watcher.bat   # Launch script
+└── README.md                # Documentation (Japanese)
 ```
 
 ## Technical Notes

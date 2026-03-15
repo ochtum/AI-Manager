@@ -1,5 +1,5 @@
 """
-AI Manager - AI CLI Process Monitor
+AI CLI Watcher - AI CLI Process Monitor
 Detects Claude Code, Codex CLI, GitHub Copilot CLI processes
 and shows their status (processing / waiting for input).
 """
@@ -26,7 +26,7 @@ import psutil
 # Constants
 # ---------------------------------------------------------------------------
 
-REFRESH_INTERVAL_MS = 1000  # auto-refresh every 1 second
+REFRESH_INTERVAL_MS = 2000  # auto-refresh every 2 seconds
 CPU_BUSY_THRESHOLD = 2.0    # percent – tree CPU above this = "processing"
 IO_BUSY_THRESHOLD = 1000    # bytes – I/O delta above this = "processing"
 LANDSCAPE_GEOMETRY = "1200x420"
@@ -1317,7 +1317,7 @@ def scan_processes() -> list[CLIProcess]:
 # GUI
 # ---------------------------------------------------------------------------
 
-class AIManagerApp:
+class AICLIWatcherApp:
     BG = "#1e1e2e"
     FG = "#cdd6f4"
     HEADING_BG = "#313244"
@@ -1365,7 +1365,7 @@ class AIManagerApp:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("AI Manager – AI CLI Process Monitor")
+        self.root.title("AI CLI Watcher – AI CLI Process Monitor")
         self.root.geometry(LANDSCAPE_GEOMETRY)
         self.root.minsize(*LANDSCAPE_MIN_SIZE)
         self.root.configure(bg=self.BG)
@@ -1431,7 +1431,7 @@ class AIManagerApp:
 
         self.title_label = tk.Label(
             self.header,
-            text="AI Manager",
+            text="AI CLI Watcher",
             font=("Segoe UI", 14, "bold"),
             bg=self.HEADING_BG,
             fg="#cba6f7",
@@ -1439,7 +1439,7 @@ class AIManagerApp:
 
         self.status_label = tk.Label(
             self.header,
-            text="",
+            text=self._refresh_interval_text(),
             font=("Segoe UI", 8),
             bg=self.HEADING_BG,
             fg=self.MUTED_FG,
@@ -1449,21 +1449,13 @@ class AIManagerApp:
         self.actions_frame = tk.Frame(self.controls_frame, bg=self.HEADING_BG)
         self.actions_frame.pack(side=tk.LEFT)
 
-        refresh_btn = ttk.Button(
-            self.actions_frame,
-            text="Refresh",
-            style="Accent.TButton",
-            command=self._manual_refresh,
-        )
-        refresh_btn.pack(side=tk.LEFT)
-
         self.layout_btn = ttk.Button(
             self.actions_frame,
-            text="Portrait",
+            text="Cards",
             style="Accent.TButton",
             command=self._toggle_layout,
         )
-        self.layout_btn.pack(side=tk.LEFT, padx=(4, 0))
+        self.layout_btn.pack(side=tk.LEFT)
 
         self.minimize_btn = ttk.Button(
             self.actions_frame,
@@ -1475,7 +1467,7 @@ class AIManagerApp:
 
         topmost_cb = tk.Checkbutton(
             self.actions_frame,
-            text="Top",
+            text="Always on Top",
             variable=self._topmost_var, command=self._on_topmost_toggle,
             bg=self.HEADING_BG, fg=self.FG, selectcolor=self.SELECT_BG,
             activebackground=self.HEADING_BG, activeforeground=self.FG,
@@ -1501,7 +1493,7 @@ class AIManagerApp:
         self.tree.heading("status", text="Status")
         self.tree.heading("cpu", text="CPU %")
         self.tree.heading("label", text="Label")
-        self.tree.heading("cwd", text="Working Directory")
+        self.tree.heading("cwd", text="Directory")
         self.tree.heading("terminal", text="Terminal")
 
         self.tree.column("cli", width=190, minwidth=150)
@@ -1690,7 +1682,7 @@ class AIManagerApp:
         result: dict[str, str] = {}
         for layout in ("landscape", "portrait", "minimized"):
             geometry = data.get(layout)
-            if isinstance(geometry, str) and AIManagerApp._is_valid_geometry(geometry):
+            if isinstance(geometry, str) and AICLIWatcherApp._is_valid_geometry(geometry):
                 result[layout] = geometry
         return result
 
@@ -1707,6 +1699,48 @@ class AIManagerApp:
     @staticmethod
     def _normalize_directory_key(directory: str) -> str:
         return directory.strip()
+
+    @staticmethod
+    def _refresh_interval_text() -> str:
+        seconds = REFRESH_INTERVAL_MS / 1000
+        if seconds.is_integer():
+            return f"Auto refresh: {int(seconds)}s"
+        return f"Auto refresh: {seconds:.1f}s"
+
+    @staticmethod
+    def _truncate_from_left(text: str, max_chars: int) -> str:
+        if max_chars <= 0:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= 3:
+            return text[-max_chars:]
+        return "..." + text[-(max_chars - 3):]
+
+    @classmethod
+    def _compact_directory(cls, directory: str, max_chars: int) -> str:
+        normalized = cls._normalize_directory_key(directory)
+        if not normalized:
+            return "(unknown)"
+        if len(normalized) <= max_chars:
+            return normalized
+
+        separator = "\\" if "\\" in normalized and "/" not in normalized else "/"
+        parts = [part for part in re.split(r"[\\/]+", normalized) if part]
+        if not parts:
+            return cls._truncate_from_left(normalized, max_chars)
+
+        tail = parts[-1]
+        if len(tail) + 4 > max_chars:
+            return cls._truncate_from_left(tail, max_chars)
+
+        for part in reversed(parts[:-1]):
+            candidate = f"{part}{separator}{tail}"
+            display = f"...{separator}{candidate}"
+            if len(display) > max_chars:
+                break
+            tail = candidate
+        return f"...{separator}{tail}"
 
     @classmethod
     def _load_process_labels(cls, data) -> dict[str, dict[str, str]]:
@@ -2071,7 +2105,7 @@ class AIManagerApp:
             self.tree_frame.pack(fill=tk.BOTH, expand=True)
 
         self._current_layout = layout
-        self.layout_btn.config(text="Wide" if layout == "portrait" else "Portrait")
+        self.layout_btn.config(text="Table" if layout == "portrait" else "Cards")
         self.root.update_idletasks()
         self._suspend_geometry_tracking = False
         self._refresh_status_wraplength()
@@ -2498,9 +2532,6 @@ class AIManagerApp:
             self._do_refresh()
         self.root.after(REFRESH_INTERVAL_MS, self._schedule_refresh)
 
-    def _manual_refresh(self):
-        self._do_refresh()
-
     def _do_refresh(self):
         if self._scanning:
             return
@@ -2540,7 +2571,7 @@ class AIManagerApp:
             self._status_text(p),
             f"{p.cpu_percent:.1f}",
             "",
-            p.cwd or "(unknown)",
+            self._compact_directory(p.cwd, 34),
             p.terminal_type or "(unknown)",
         )
 
@@ -2573,7 +2604,7 @@ class AIManagerApp:
             count = len(procs)
             ts = time.strftime("%H:%M:%S")
             self.status_label.config(
-                text=f"{count} found | {ts}"
+                text=f"{count} found | {ts} | {self._refresh_interval_text()}"
             )
         finally:
             self._scanning = False
@@ -2756,7 +2787,7 @@ class AIManagerApp:
         accent_bar = tk.Frame(card, bg=accent, width=3, cursor="hand2")
         accent_bar.pack(side=tk.LEFT, fill=tk.Y)
 
-        content = tk.Frame(card, bg=status_bg, padx=8, pady=8, cursor="hand2")
+        content = tk.Frame(card, bg=status_bg, padx=6, pady=6, cursor="hand2")
         content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         header = tk.Frame(content, bg=status_bg, cursor="hand2")
@@ -2782,8 +2813,8 @@ class AIManagerApp:
             font=("Segoe UI", 9, "bold"),
             bg=badge_bg,
             fg=badge_fg,
-            padx=10,
-            pady=4,
+            padx=8,
+            pady=3,
             highlightthickness=1,
             highlightbackground=accent,
             highlightcolor=accent,
@@ -2792,7 +2823,7 @@ class AIManagerApp:
         status_badge.pack(side=tk.RIGHT, padx=(8, 0))
 
         label_row = tk.Frame(content, bg=self.CARD_BG)
-        label_row.pack(fill=tk.X, pady=(6, 0))
+        label_row.pack(fill=tk.X, pady=(4, 0))
 
         label_button = tk.Button(
             label_row,
@@ -2801,7 +2832,7 @@ class AIManagerApp:
             relief=tk.FLAT,
             bd=0,
             padx=10,
-            pady=4,
+            pady=3,
             cursor="hand2",
             bg=self.CHIP_BG,
             fg=self.FG,
@@ -2823,7 +2854,7 @@ class AIManagerApp:
             bd=0,
             width=2,
             padx=0,
-            pady=3,
+            pady=2,
             cursor="hand2",
             bg=self.CHIP_BG,
             fg=self.FG,
@@ -2836,58 +2867,28 @@ class AIManagerApp:
         )
         self._mark_card_control(label_delete_button)
 
-        meta = tk.Frame(content, bg=self.CARD_BG, cursor="hand2")
-        meta.pack(fill=tk.X, pady=(6, 0))
-
-        pid_card = tk.Frame(meta, bg=self.CHIP_BG, padx=6, pady=4, cursor="hand2")
-        pid_card.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Label(
-            pid_card,
-            text="PID",
-            font=("Segoe UI", 7, "bold"),
-            bg=self.CHIP_BG,
-            fg=self.MUTED_FG,
-            anchor="w",
-            cursor="hand2",
-        ).pack(anchor="w")
-        pid_value = tk.Label(
-            pid_card,
-            text="",
-            font=("Segoe UI", 8, "bold"),
-            bg=self.CHIP_BG,
-            fg=self.FG,
-            anchor="w",
-            cursor="hand2",
-        )
-        pid_value.pack(anchor="w", pady=(2, 0))
-
-        cpu_card = tk.Frame(meta, bg=self.CHIP_BG, padx=6, pady=4, cursor="hand2")
-        cpu_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
-        tk.Label(
-            cpu_card,
-            text="CPU %",
-            font=("Segoe UI", 7, "bold"),
-            bg=self.CHIP_BG,
-            fg=self.MUTED_FG,
-            anchor="w",
-            cursor="hand2",
-        ).pack(anchor="w")
-        cpu_value = tk.Label(
-            cpu_card,
-            text="",
-            font=("Segoe UI", 8, "bold"),
-            bg=self.CHIP_BG,
-            fg=self.FG,
-            anchor="w",
-            cursor="hand2",
-        )
-        cpu_value.pack(anchor="w", pady=(2, 0))
-
         details = tk.Frame(content, bg=self.CARD_BG, cursor="hand2")
-        details.pack(fill=tk.X, pady=(6, 0))
+        details.pack(fill=tk.X, pady=(4, 0))
 
-        terminal_value = self._create_card_detail(details, "Terminal")
-        cwd_value = self._create_card_detail(details, "Directory")
+        stats_row = tk.Frame(details, bg=self.CARD_BG, cursor="hand2")
+        stats_row.pack(fill=tk.X)
+        pid_value = self._create_card_detail(
+            stats_row,
+            "PID",
+            side=tk.LEFT,
+            expand=True,
+            value_font=("Segoe UI", 8, "bold"),
+        )
+        cpu_value = self._create_card_detail(
+            stats_row,
+            "CPU",
+            side=tk.LEFT,
+            expand=True,
+            padx=(12, 0),
+            value_font=("Segoe UI", 8, "bold"),
+        )
+        terminal_value = self._create_card_detail(details, "Terminal", row_pady=(2, 0))
+        cwd_value = self._create_card_detail(details, "Directory", row_pady=(2, 0))
 
         bundle = {
             "frame": card,
@@ -2907,30 +2908,49 @@ class AIManagerApp:
         self._bind_card_activation(card, p.pid)
         return bundle
 
-    def _create_card_detail(self, parent: tk.Widget, label_text: str) -> tk.Label:
+    def _create_card_detail(
+        self,
+        parent: tk.Widget,
+        label_text: str,
+        *,
+        side=tk.TOP,
+        expand: bool = False,
+        padx: tuple[int, int] = (0, 0),
+        row_pady: tuple[int, int] = (0, 4),
+        value_font: tuple[str, int] | tuple[str, int, str] = ("Segoe UI", 8),
+    ) -> tk.Label:
         row = tk.Frame(parent, bg=self.CARD_BG, cursor="hand2")
-        row.pack(fill=tk.X, pady=(0, 5))
+        pack_kwargs: dict[str, object] = {
+            "side": side,
+            "fill": tk.X,
+            "expand": expand,
+        }
+        if side == tk.LEFT:
+            pack_kwargs["padx"] = padx
+        else:
+            pack_kwargs["pady"] = row_pady
+        row.pack(**pack_kwargs)
         label = tk.Label(
             row,
-            text=label_text.upper(),
-            font=("Segoe UI", 7, "bold"),
+            text=f"{label_text}:",
+            font=("Segoe UI", 8, "bold"),
             bg=self.CARD_BG,
             fg=self.MUTED_FG,
             anchor="w",
             cursor="hand2",
         )
-        label.pack(anchor="w")
+        label.pack(side=tk.LEFT)
         value = tk.Label(
             row,
             text="",
-            font=("Segoe UI", 8),
+            font=value_font,
             bg=self.CARD_BG,
             fg=self.FG,
             anchor="w",
             justify="left",
             cursor="hand2",
         )
-        value.pack(fill=tk.X, expand=True, pady=(1, 0))
+        value.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
         return value
 
     @staticmethod
@@ -3115,8 +3135,8 @@ class AIManagerApp:
         self._retint_card_background(bundle["frame"], status_bg)
         self._update_label_controls(bundle, p)
         bundle["pid_value"].config(text=str(p.pid))
-        bundle["cpu_value"].config(text=f"{p.cpu_percent:.1f}")
-        bundle["cwd_value"].config(text=p.cwd or "(unknown)")
+        bundle["cpu_value"].config(text=f"{p.cpu_percent:.1f}%")
+        bundle["cwd_value"].config(text=self._compact_directory(p.cwd, 42))
         bundle["terminal_value"].config(text=p.terminal_type or "(unknown)")
 
     # ---- Window activation ----
@@ -3162,15 +3182,21 @@ class AIManagerApp:
     def _activate_pid(self, pid: int) -> None:
         proc = self._process_lookup.get(pid)
         if proc is None or not proc.hwnds:
-            self.status_label.config(text=f"No window found for PID {pid}")
+            self.status_label.config(
+                text=f"No window found for PID {pid} | {self._refresh_interval_text()}"
+            )
             return
 
         hwnd = proc.hwnds[0]
         try:
             activate_window(hwnd)
-            self.status_label.config(text=f"Activated window for PID {pid}")
+            self.status_label.config(
+                text=f"Activated window for PID {pid} | {self._refresh_interval_text()}"
+            )
         except Exception as e:
-            self.status_label.config(text=f"Failed to activate: {e}")
+            self.status_label.config(
+                text=f"Failed to activate: {e} | {self._refresh_interval_text()}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3179,7 +3205,7 @@ class AIManagerApp:
 
 def main():
     print("=" * 50)
-    print("  AI Manager - AI CLI Process Monitor")
+    print("  AI CLI Watcher - AI CLI Process Monitor")
     print("=" * 50)
     print()
     print(f"  Started at : {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -3198,10 +3224,10 @@ def main():
     except Exception:
         pass
 
-    app = AIManagerApp(root)
+    app = AICLIWatcherApp(root)
     root.mainloop()
     print()
-    print("AI Manager stopped.")
+    print("AI CLI Watcher stopped.")
 
 
 if __name__ == "__main__":
