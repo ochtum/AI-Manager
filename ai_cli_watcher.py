@@ -2348,7 +2348,7 @@ class AICLIWatcherApp:
         name_entry = tk.Entry(
             frame,
             textvariable=name_var,
-            font=("Segoe UI", 9),
+            font=(self._label_font_family, 9),
             relief=tk.FLAT,
             bd=0,
             highlightthickness=1,
