@@ -1,5 +1,5 @@
 """
-AI Manager - AI CLI Process Monitor
+AI CLI Watcher - AI CLI Process Monitor
 Detects Claude Code, Codex CLI, GitHub Copilot CLI processes
 and shows their status (processing / waiting for input).
 """
@@ -26,7 +26,7 @@ import psutil
 # Constants
 # ---------------------------------------------------------------------------
 
-REFRESH_INTERVAL_MS = 1000  # auto-refresh every 1 second
+REFRESH_INTERVAL_MS = 2000  # auto-refresh every 2 seconds
 CPU_BUSY_THRESHOLD = 2.0    # percent – tree CPU above this = "processing"
 IO_BUSY_THRESHOLD = 1000    # bytes – I/O delta above this = "processing"
 LANDSCAPE_GEOMETRY = "1200x420"
@@ -80,6 +80,19 @@ WSL_LAUNCHER_EXE_PATTERNS = {
     "bash",
     "sh",
     "env",
+}
+
+WSL_TAB_TTY_PROCESS_NAMES = {
+    "bash",
+    "zsh",
+    "fish",
+    "sh",
+    "tmux",
+    "screen",
+    "nu",
+    "nushell",
+    "pwsh",
+    "powershell",
 }
 
 WSL_CLI_DEFINITIONS = [
@@ -257,6 +270,20 @@ class CLIProcess:
     terminal_pid: Optional[int] = None
     terminal_type: str = ""   # stable label: e.g. "Windows Terminal", "WSL:Ubuntu"
     hwnds: list[int] = field(default_factory=list)
+    wsl_distro: str = ""
+    wsl_tty: str = ""
+
+
+@dataclass(frozen=True)
+class WSLTabHost:
+    distro: str
+    hwnd: int
+    host_pid: int
+    host_started_ms: int
+
+    @property
+    def fingerprint(self) -> tuple[int, int]:
+        return self.host_pid, self.host_started_ms
 
 
 def _match_cli(proc_info: dict) -> Optional[str]:
@@ -382,6 +409,239 @@ _prev_io: dict[int, int] = {}
 _wsl_prev_cpu: dict[tuple[str, int], tuple[float, int]] = {}
 _wsl_prev_io: dict[tuple[str, int], int] = {}
 _wsl_clk_tck: dict[str, int] = {}
+_wsl_terminal_assignments: dict[str, dict[str, tuple[int, int]]] = {}
+_wsl_terminal_assignments_dirty = False
+_wsl_terminal_assignments_lock = threading.Lock()
+_default_wsl_distro: Optional[str] = None
+
+
+def _normalize_wsl_terminal_assignments(data) -> dict[str, dict[str, dict[str, int]]]:
+    if not isinstance(data, dict):
+        return {}
+
+    normalized: dict[str, dict[str, dict[str, int]]] = {}
+    for raw_distro, raw_assignments in data.items():
+        if not isinstance(raw_distro, str) or not isinstance(raw_assignments, dict):
+            continue
+        distro = raw_distro.strip()
+        if not distro:
+            continue
+
+        tty_assignments: dict[str, dict[str, int]] = {}
+        for raw_tty, raw_host in raw_assignments.items():
+            if not isinstance(raw_tty, str) or not isinstance(raw_host, dict):
+                continue
+            tty = raw_tty.strip()
+            if not tty:
+                continue
+
+            host_pid = raw_host.get("host_pid")
+            host_started_ms = raw_host.get("host_started_ms")
+            if (
+                not isinstance(host_pid, int)
+                or isinstance(host_pid, bool)
+                or host_pid <= 0
+                or not isinstance(host_started_ms, int)
+                or isinstance(host_started_ms, bool)
+                or host_started_ms <= 0
+            ):
+                continue
+
+            tty_assignments[tty] = {
+                "host_pid": host_pid,
+                "host_started_ms": host_started_ms,
+            }
+
+        if tty_assignments:
+            normalized[distro] = tty_assignments
+
+    return normalized
+
+
+def _deserialize_wsl_terminal_assignments(data) -> dict[str, dict[str, tuple[int, int]]]:
+    normalized = _normalize_wsl_terminal_assignments(data)
+    return {
+        distro: {
+            tty: (host["host_pid"], host["host_started_ms"])
+            for tty, host in assignments.items()
+        }
+        for distro, assignments in normalized.items()
+    }
+
+
+def _serialize_wsl_terminal_assignments(
+    data: dict[str, dict[str, tuple[int, int]]],
+) -> dict[str, dict[str, dict[str, int]]]:
+    return {
+        distro: {
+            tty: {
+                "host_pid": host_pid,
+                "host_started_ms": host_started_ms,
+            }
+            for tty, (host_pid, host_started_ms) in assignments.items()
+        }
+        for distro, assignments in data.items()
+        if assignments
+    }
+
+
+def _load_wsl_terminal_assignments_from_settings(data) -> None:
+    global _wsl_terminal_assignments, _wsl_terminal_assignments_dirty
+
+    assignments = _deserialize_wsl_terminal_assignments(data)
+    with _wsl_terminal_assignments_lock:
+        _wsl_terminal_assignments = assignments
+        _wsl_terminal_assignments_dirty = False
+
+
+def _take_wsl_terminal_assignments_if_dirty() -> Optional[dict[str, dict[str, dict[str, int]]]]:
+    global _wsl_terminal_assignments_dirty
+
+    with _wsl_terminal_assignments_lock:
+        if not _wsl_terminal_assignments_dirty:
+            return None
+        _wsl_terminal_assignments_dirty = False
+        snapshot = {
+            distro: dict(assignments)
+            for distro, assignments in _wsl_terminal_assignments.items()
+        }
+    return _serialize_wsl_terminal_assignments(snapshot)
+
+
+def _store_wsl_terminal_assignments(
+    distro: str,
+    assignments: dict[str, tuple[int, int]],
+) -> None:
+    global _wsl_terminal_assignments_dirty
+
+    with _wsl_terminal_assignments_lock:
+        current = _wsl_terminal_assignments.get(distro)
+        if assignments:
+            if current == assignments:
+                return
+            _wsl_terminal_assignments[distro] = dict(assignments)
+            _wsl_terminal_assignments_dirty = True
+            return
+
+        if distro in _wsl_terminal_assignments:
+            del _wsl_terminal_assignments[distro]
+            _wsl_terminal_assignments_dirty = True
+
+
+def _prune_wsl_terminal_assignments(live_ttys_by_distro: dict[str, set[str]]) -> None:
+    global _wsl_terminal_assignments_dirty
+
+    with _wsl_terminal_assignments_lock:
+        for distro in list(_wsl_terminal_assignments):
+            live_ttys = live_ttys_by_distro.get(distro, set())
+            if not live_ttys:
+                del _wsl_terminal_assignments[distro]
+                _wsl_terminal_assignments_dirty = True
+                continue
+
+            current = _wsl_terminal_assignments[distro]
+            pruned = {
+                tty: fingerprint
+                for tty, fingerprint in current.items()
+                if tty in live_ttys
+            }
+            if pruned == current:
+                continue
+            if pruned:
+                _wsl_terminal_assignments[distro] = pruned
+            else:
+                del _wsl_terminal_assignments[distro]
+            _wsl_terminal_assignments_dirty = True
+
+
+def _decode_wsl_output(raw: bytes) -> str:
+    if b"\x00" in raw:
+        return raw.decode("utf-16-le", errors="replace").replace("\x00", "")
+    return raw.decode("utf-8", errors="replace")
+
+
+def _get_default_wsl_distro() -> str:
+    global _default_wsl_distro
+
+    if _default_wsl_distro is not None:
+        return _default_wsl_distro
+
+    import subprocess
+
+    default_distro = ""
+    try:
+        out = subprocess.check_output(
+            ["wsl", "--list", "--verbose"],
+            timeout=5,
+            stderr=subprocess.DEVNULL,
+        )
+        for line in _decode_wsl_output(out).splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("*"):
+                continue
+            parts = re.split(r"\s{2,}", stripped[1:].strip(), maxsplit=1)
+            if parts and parts[0]:
+                default_distro = parts[0].strip()
+                break
+    except Exception:
+        pass
+
+    _default_wsl_distro = default_distro
+    return default_distro
+
+
+def _parse_wsl_distro_from_cmdline(cmdline: list[str]) -> str:
+    for index, part in enumerate(cmdline):
+        lowered = part.lower()
+        if lowered in {"-d", "--distribution"} and index + 1 < len(cmdline):
+            return cmdline[index + 1].strip()
+        if lowered.startswith("--distribution="):
+            return part.split("=", 1)[1].strip()
+        if lowered.startswith("-d") and len(part) > 2:
+            return part[2:].strip()
+    return _get_default_wsl_distro()
+
+
+def _has_wsl_relay_ancestor(
+    pid: int,
+    ppid_by_pid: dict[int, int],
+    comm_by_pid: dict[int, str],
+) -> bool:
+    visited: set[int] = set()
+    current = ppid_by_pid.get(pid)
+    while current and current > 0 and current not in visited:
+        visited.add(current)
+        if (comm_by_pid.get(current) or "").startswith("Relay("):
+            return True
+        current = ppid_by_pid.get(current)
+    return False
+
+
+def _collect_wsl_tab_ttys(ps_rows: list[dict[str, object]]) -> set[str]:
+    ppid_by_pid = {
+        int(row["pid"]): int(row["ppid"])
+        for row in ps_rows
+    }
+    comm_by_pid = {
+        int(row["pid"]): str(row["comm"])
+        for row in ps_rows
+    }
+
+    live_ttys: set[str] = set()
+    for row in ps_rows:
+        tty = str(row["tty"])
+        if not tty or tty == "?":
+            continue
+        pid = int(row["pid"])
+        comm = str(row["comm"]).lower()
+        args = str(row["args"])
+        # Visible terminal tabs show up as Relay-backed sessions; this excludes
+        # scanner-created ptys and background WSL invocations without a tab host.
+        if not _has_wsl_relay_ancestor(pid, ppid_by_pid, comm_by_pid):
+            continue
+        if comm in WSL_TAB_TTY_PROCESS_NAMES or _match_wsl_cli(str(row["comm"]), args)[0] is not None:
+            live_ttys.add(tty)
+    return live_ttys
 
 
 def _get_tree_io(proc: psutil.Process) -> int:
@@ -653,45 +913,35 @@ def _resolve_hwnds(procs: list[CLIProcess]) -> None:
             p.hwnds = p.hwnds[:1]
 
 
-def _find_wsl_tab_hwnds() -> list[tuple[int, float]]:
-    """Find interactive WSL tab host processes and their console HWNDs.
-
-    Returns a list of (hwnd, create_time) sorted by creation time (oldest first).
-    Each entry corresponds to one WSL terminal tab/window host.
-    """
-    import subprocess
-
-    # Interactive WSL tabs are typically: cmd.exe -> wsl.exe -> wsl.exe
-    # or directly: wsl.exe (interactive, no --exec).
-    # We look for wsl.exe processes whose cmdline is just "wsl.exe -d <distro>"
-    # (no --exec) and find the topmost Windows host process with a console.
-    wsl_procs: list[psutil.Process] = []
+def _find_wsl_tab_hosts() -> dict[str, list[WSLTabHost]]:
+    """Find interactive WSL tab hosts grouped by distribution."""
+    wsl_procs: list[tuple[psutil.Process, str]] = []
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             if (proc.info["name"] or "").lower() != "wsl.exe":
                 continue
             cmdline = proc.info.get("cmdline") or []
             cmd_lower = " ".join(cmdline).lower()
-            # Skip non-interactive (--exec) WSL processes
-            if "--exec" in cmd_lower or "--cd" in cmd_lower:
+            # Skip non-interactive (--exec) WSL processes.
+            if "--exec" in cmd_lower or re.search(r"(^|\s)-e(\s|$)", cmd_lower):
                 continue
-            # Only consider wsl.exe whose parent is cmd.exe or a terminal
-            # (not another wsl.exe – those are children)
+            distro = _parse_wsl_distro_from_cmdline(cmdline)
+            if not distro:
+                continue
             try:
                 parent = proc.parent()
                 if parent and (parent.name() or "").lower() == "wsl.exe":
-                    continue  # child wsl.exe, skip
+                    continue
             except (psutil.AccessDenied, psutil.NoSuchProcess):
                 pass
-            wsl_procs.append(proc)
+            wsl_procs.append((proc, distro))
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             continue
 
-    # Get console HWND for each via their parent cmd.exe (or themselves)
-    tab_hwnds: list[tuple[int, float]] = []
-    for wp in wsl_procs:
+    hosts_by_distro: dict[str, list[WSLTabHost]] = {}
+    seen_fingerprints: dict[str, set[tuple[int, int]]] = {}
+    for wp, distro in wsl_procs:
         try:
-            # Try parent first (cmd.exe that hosts the WSL session)
             target_pid = wp.pid
             host_proc = wp
             try:
@@ -704,17 +954,76 @@ def _find_wsl_tab_hwnds() -> list[tuple[int, float]]:
 
             hwnd = _get_console_hwnd_for_pid(target_pid)
             if hwnd:
-                # Use the window host process creation time (typically cmd.exe).
-                # Using child wsl.exe creation time can reorder tabs incorrectly
-                # when child processes are recreated.
-                ctime = host_proc.create_time()
-                tab_hwnds.append((hwnd, ctime))
+                started_ms = int(host_proc.create_time() * 1000)
+                host = WSLTabHost(
+                    distro=distro,
+                    hwnd=hwnd,
+                    host_pid=host_proc.pid,
+                    host_started_ms=started_ms,
+                )
+                fingerprints = seen_fingerprints.setdefault(distro, set())
+                if host.fingerprint in fingerprints:
+                    continue
+                fingerprints.add(host.fingerprint)
+                hosts_by_distro.setdefault(distro, []).append(host)
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             continue
 
-    # Sort by creation time (oldest first -> lowest pts number)
-    tab_hwnds.sort(key=lambda x: x[1])
-    return tab_hwnds
+    for hosts in hosts_by_distro.values():
+        hosts.sort(key=lambda host: (host.host_started_ms, host.host_pid))
+    return hosts_by_distro
+
+
+def _resolve_wsl_tty_hwnds(
+    distro: str,
+    target_ttys: set[str],
+    live_ttys: set[str],
+    tty_age_seconds: dict[str, int],
+    tab_hosts: list[WSLTabHost],
+) -> dict[str, int]:
+    ordered_live_ttys = sorted(
+        live_ttys,
+        key=lambda tty: (-tty_age_seconds.get(tty, -1), _tty_sort_key(tty)),
+    )
+    host_by_fingerprint = {host.fingerprint: host for host in tab_hosts}
+
+    with _wsl_terminal_assignments_lock:
+        cached_assignments = dict(_wsl_terminal_assignments.get(distro, {}))
+
+    resolved_hwnds: dict[str, int] = {}
+    used_fingerprints: set[tuple[int, int]] = set()
+
+    for tty in ordered_live_ttys:
+        fingerprint = cached_assignments.get(tty)
+        if fingerprint is None or fingerprint in used_fingerprints:
+            continue
+        host = host_by_fingerprint.get(fingerprint)
+        if host is None:
+            del cached_assignments[tty]
+            continue
+        if tty in target_ttys:
+            resolved_hwnds[tty] = host.hwnd
+        used_fingerprints.add(fingerprint)
+
+    new_ttys = [tty for tty in ordered_live_ttys if tty not in cached_assignments]
+    unused_hosts = [
+        host for host in tab_hosts if host.fingerprint not in used_fingerprints
+    ]
+
+    if new_ttys and len(new_ttys) == len(unused_hosts):
+        for tty, host in zip(new_ttys, unused_hosts):
+            cached_assignments[tty] = host.fingerprint
+            if tty in target_ttys:
+                resolved_hwnds[tty] = host.hwnd
+            used_fingerprints.add(host.fingerprint)
+
+    persisted_assignments = {
+        tty: cached_assignments[tty]
+        for tty in ordered_live_ttys
+        if tty in cached_assignments
+    }
+    _store_wsl_terminal_assignments(distro, persisted_assignments)
+    return resolved_hwnds
 
 
 def _scan_wsl_processes() -> list[CLIProcess]:
@@ -723,6 +1032,7 @@ def _scan_wsl_processes() -> list[CLIProcess]:
 
     results: list[CLIProcess] = []
     live_keys: set[tuple[str, int]] = set()
+    live_ttys_by_distro: dict[str, set[str]] = {}
 
     # Identify running WSL distributions
     try:
@@ -730,16 +1040,12 @@ def _scan_wsl_processes() -> list[CLIProcess]:
             ["wsl", "--list", "--running", "--quiet"],
             timeout=5, stderr=subprocess.DEVNULL,
         )
-        try:
-            distros = out.decode("utf-16-le").strip().split("\n")
-        except UnicodeDecodeError:
-            distros = out.decode("utf-8", errors="replace").strip().split("\n")
-        distros = [d.strip().strip("\x00") for d in distros if d.strip().strip("\x00")]
+        distros = _decode_wsl_output(out).strip().split("\n")
+        distros = [d.strip() for d in distros if d.strip()]
     except Exception:
         return results
 
-    # Get console HWNDs for WSL tabs, sorted by creation time
-    tab_hwnds = _find_wsl_tab_hwnds()
+    tab_hosts_by_distro = _find_wsl_tab_hosts()
 
     for distro in distros:
         try:
@@ -762,6 +1068,7 @@ def _scan_wsl_processes() -> list[CLIProcess]:
         # Per-tty "age" proxy (seconds): larger means the tty has older processes.
         # This is more reliable than raw pts numbering when pts values were reused.
         tty_age_seconds: dict[str, int] = {}
+        ps_rows: list[dict[str, object]] = []
 
         # First pass: pick the best-matching process for each CLI/TTY pair.
         best_by_tty: dict[tuple[str, str], tuple[tuple[int, float, int], CLIProcess]] = {}
@@ -773,6 +1080,7 @@ def _scan_wsl_processes() -> list[CLIProcess]:
 
             try:
                 wsl_pid = int(parts[0])
+                wsl_ppid = int(parts[1])
                 cpu = float(parts[2])
                 elapsed = int(parts[3])
             except ValueError:
@@ -781,6 +1089,14 @@ def _scan_wsl_processes() -> list[CLIProcess]:
             tty = parts[4]
             exe_name = parts[5]
             cmdline_str = parts[6]
+
+            ps_rows.append({
+                "pid": wsl_pid,
+                "ppid": wsl_ppid,
+                "tty": tty,
+                "comm": exe_name,
+                "args": cmdline_str,
+            })
 
             if tty and tty != "?":
                 previous = tty_age_seconds.get(tty, -1)
@@ -805,6 +1121,8 @@ def _scan_wsl_processes() -> list[CLIProcess]:
                 terminal_pid=None,
                 terminal_type=f"WSL:{distro} ({tty})",
                 hwnds=[],
+                wsl_distro=distro,
+                wsl_tty=tty,
             )
 
             key = (display_name, tty)
@@ -832,18 +1150,41 @@ def _scan_wsl_processes() -> list[CLIProcess]:
                 io_total,
             )
 
-        # Sort by inferred tty age (oldest first), then tty as a stable fallback.
-        # tab_hwnds are also sorted oldest first by host-process creation time.
+        tty_groups: dict[str, list[CLIProcess]] = {}
+        for tty, proc_entry in tty_procs:
+            if tty and tty != "?":
+                tty_groups.setdefault(tty, []).append(proc_entry)
+
+        live_tab_ttys = _collect_wsl_tab_ttys(ps_rows)
+        if live_tab_ttys:
+            live_ttys_by_distro[distro] = set(live_tab_ttys)
+        tty_hwnds: dict[str, int] = {}
+        if tty_groups and live_tab_ttys:
+            tty_hwnds = _resolve_wsl_tty_hwnds(
+                distro,
+                set(tty_groups),
+                live_tab_ttys,
+                tty_age_seconds,
+                tab_hosts_by_distro.get(distro, []),
+            )
+
         tty_procs.sort(
-            key=lambda x: (-tty_age_seconds.get(x[0], -1), _tty_sort_key(x[0]))
+            key=lambda x: (
+                -tty_age_seconds.get(x[0], -1),
+                _tty_sort_key(x[0]),
+                x[1].name,
+                x[1].pid,
+            )
         )
 
-        # Assign HWNDs: both sides are sorted oldest first.
-        for i, (tty, proc_entry) in enumerate(tty_procs):
+        for tty, proc_entry in tty_procs:
             live_keys.add((distro, proc_entry.pid))
-            if i < len(tab_hwnds):
-                proc_entry.hwnds = [tab_hwnds[i][0]]
+            hwnd = tty_hwnds.get(tty)
+            if hwnd:
+                proc_entry.hwnds = [hwnd]
             results.append(proc_entry)
+
+    _prune_wsl_terminal_assignments(live_ttys_by_distro)
 
     for key in list(_wsl_prev_cpu):
         if key not in live_keys:
@@ -976,7 +1317,7 @@ def scan_processes() -> list[CLIProcess]:
 # GUI
 # ---------------------------------------------------------------------------
 
-class AIManagerApp:
+class AICLIWatcherApp:
     BG = "#1e1e2e"
     FG = "#cdd6f4"
     HEADING_BG = "#313244"
@@ -1024,7 +1365,7 @@ class AIManagerApp:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("AI Manager – AI CLI Process Monitor")
+        self.root.title("AI CLI Watcher – AI CLI Process Monitor")
         self.root.geometry(LANDSCAPE_GEOMETRY)
         self.root.minsize(*LANDSCAPE_MIN_SIZE)
         self.root.configure(bg=self.BG)
@@ -1090,7 +1431,7 @@ class AIManagerApp:
 
         self.title_label = tk.Label(
             self.header,
-            text="AI Manager",
+            text="AI CLI Watcher",
             font=("Segoe UI", 14, "bold"),
             bg=self.HEADING_BG,
             fg="#cba6f7",
@@ -1098,7 +1439,7 @@ class AIManagerApp:
 
         self.status_label = tk.Label(
             self.header,
-            text="",
+            text=self._refresh_interval_text(),
             font=("Segoe UI", 8),
             bg=self.HEADING_BG,
             fg=self.MUTED_FG,
@@ -1108,21 +1449,13 @@ class AIManagerApp:
         self.actions_frame = tk.Frame(self.controls_frame, bg=self.HEADING_BG)
         self.actions_frame.pack(side=tk.LEFT)
 
-        refresh_btn = ttk.Button(
-            self.actions_frame,
-            text="Refresh",
-            style="Accent.TButton",
-            command=self._manual_refresh,
-        )
-        refresh_btn.pack(side=tk.LEFT)
-
         self.layout_btn = ttk.Button(
             self.actions_frame,
-            text="Portrait",
+            text="Cards",
             style="Accent.TButton",
             command=self._toggle_layout,
         )
-        self.layout_btn.pack(side=tk.LEFT, padx=(4, 0))
+        self.layout_btn.pack(side=tk.LEFT)
 
         self.minimize_btn = ttk.Button(
             self.actions_frame,
@@ -1134,7 +1467,7 @@ class AIManagerApp:
 
         topmost_cb = tk.Checkbutton(
             self.actions_frame,
-            text="Top",
+            text="Always on Top",
             variable=self._topmost_var, command=self._on_topmost_toggle,
             bg=self.HEADING_BG, fg=self.FG, selectcolor=self.SELECT_BG,
             activebackground=self.HEADING_BG, activeforeground=self.FG,
@@ -1160,7 +1493,7 @@ class AIManagerApp:
         self.tree.heading("status", text="Status")
         self.tree.heading("cpu", text="CPU %")
         self.tree.heading("label", text="Label")
-        self.tree.heading("cwd", text="Working Directory")
+        self.tree.heading("cwd", text="Directory")
         self.tree.heading("terminal", text="Terminal")
 
         self.tree.column("cli", width=190, minwidth=150)
@@ -1271,6 +1604,7 @@ class AIManagerApp:
             "layout_mode": "landscape",
             "window_geometries": cls._default_window_geometries(),
             "process_labels": {},
+            "wsl_terminal_assignments": {},
         }
 
     @classmethod
@@ -1300,6 +1634,9 @@ class AIManagerApp:
         normalized["window_geometries"] = window_geometries
 
         normalized["process_labels"] = cls._load_process_labels(data.get("process_labels"))
+        normalized["wsl_terminal_assignments"] = _normalize_wsl_terminal_assignments(
+            data.get("wsl_terminal_assignments")
+        )
         return normalized
 
     @classmethod
@@ -1320,6 +1657,9 @@ class AIManagerApp:
                 should_write = True
 
         normalized = cls._normalize_settings(raw_data)
+        _load_wsl_terminal_assignments_from_settings(
+            normalized.get("wsl_terminal_assignments")
+        )
         if raw_data != normalized:
             should_write = True
         if should_write:
@@ -1342,7 +1682,7 @@ class AIManagerApp:
         result: dict[str, str] = {}
         for layout in ("landscape", "portrait", "minimized"):
             geometry = data.get(layout)
-            if isinstance(geometry, str) and AIManagerApp._is_valid_geometry(geometry):
+            if isinstance(geometry, str) and AICLIWatcherApp._is_valid_geometry(geometry):
                 result[layout] = geometry
         return result
 
@@ -1359,6 +1699,48 @@ class AIManagerApp:
     @staticmethod
     def _normalize_directory_key(directory: str) -> str:
         return directory.strip()
+
+    @staticmethod
+    def _refresh_interval_text() -> str:
+        seconds = REFRESH_INTERVAL_MS / 1000
+        if seconds.is_integer():
+            return f"Auto refresh: {int(seconds)}s"
+        return f"Auto refresh: {seconds:.1f}s"
+
+    @staticmethod
+    def _truncate_from_left(text: str, max_chars: int) -> str:
+        if max_chars <= 0:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= 3:
+            return text[-max_chars:]
+        return "..." + text[-(max_chars - 3):]
+
+    @classmethod
+    def _compact_directory(cls, directory: str, max_chars: int) -> str:
+        normalized = cls._normalize_directory_key(directory)
+        if not normalized:
+            return "(unknown)"
+        if len(normalized) <= max_chars:
+            return normalized
+
+        separator = "\\" if "\\" in normalized and "/" not in normalized else "/"
+        parts = [part for part in re.split(r"[\\/]+", normalized) if part]
+        if not parts:
+            return cls._truncate_from_left(normalized, max_chars)
+
+        tail = parts[-1]
+        if len(tail) + 4 > max_chars:
+            return cls._truncate_from_left(tail, max_chars)
+
+        for part in reversed(parts[:-1]):
+            candidate = f"{part}{separator}{tail}"
+            display = f"...{separator}{candidate}"
+            if len(display) > max_chars:
+                break
+            tail = candidate
+        return f"...{separator}{tail}"
 
     @classmethod
     def _load_process_labels(cls, data) -> dict[str, dict[str, str]]:
@@ -1723,7 +2105,7 @@ class AIManagerApp:
             self.tree_frame.pack(fill=tk.BOTH, expand=True)
 
         self._current_layout = layout
-        self.layout_btn.config(text="Wide" if layout == "portrait" else "Portrait")
+        self.layout_btn.config(text="Table" if layout == "portrait" else "Cards")
         self.root.update_idletasks()
         self._suspend_geometry_tracking = False
         self._refresh_status_wraplength()
@@ -1966,7 +2348,7 @@ class AIManagerApp:
         name_entry = tk.Entry(
             frame,
             textvariable=name_var,
-            font=("Segoe UI", 9),
+            font=(self._label_font_family, 9),
             relief=tk.FLAT,
             bd=0,
             highlightthickness=1,
@@ -2150,9 +2532,6 @@ class AIManagerApp:
             self._do_refresh()
         self.root.after(REFRESH_INTERVAL_MS, self._schedule_refresh)
 
-    def _manual_refresh(self):
-        self._do_refresh()
-
     def _do_refresh(self):
         if self._scanning:
             return
@@ -2192,7 +2571,7 @@ class AIManagerApp:
             self._status_text(p),
             f"{p.cpu_percent:.1f}",
             "",
-            p.cwd or "(unknown)",
+            self._compact_directory(p.cwd, 34),
             p.terminal_type or "(unknown)",
         )
 
@@ -2202,7 +2581,17 @@ class AIManagerApp:
             return ("#f38ba8", "#3a1a1a", "#6c2742", "#ffffff")
         return ("#a6e3a1", "#1a3a2a", "#2f6549", "#ffffff")
 
+    def _persist_runtime_settings(self) -> None:
+        wsl_assignments = _take_wsl_terminal_assignments_if_dirty()
+        if wsl_assignments is None:
+            return
+        if self._settings.get("wsl_terminal_assignments") == wsl_assignments:
+            return
+        self._settings["wsl_terminal_assignments"] = wsl_assignments
+        self._write_settings(self._settings)
+
     def _update_views(self, procs: list[CLIProcess]):
+        self._persist_runtime_settings()
         self._processes = procs
         self._process_lookup = {p.pid: p for p in procs}
 
@@ -2215,7 +2604,7 @@ class AIManagerApp:
             count = len(procs)
             ts = time.strftime("%H:%M:%S")
             self.status_label.config(
-                text=f"{count} found | {ts}"
+                text=f"{count} found | {ts} | {self._refresh_interval_text()}"
             )
         finally:
             self._scanning = False
@@ -2398,7 +2787,7 @@ class AIManagerApp:
         accent_bar = tk.Frame(card, bg=accent, width=3, cursor="hand2")
         accent_bar.pack(side=tk.LEFT, fill=tk.Y)
 
-        content = tk.Frame(card, bg=status_bg, padx=8, pady=8, cursor="hand2")
+        content = tk.Frame(card, bg=status_bg, padx=6, pady=6, cursor="hand2")
         content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         header = tk.Frame(content, bg=status_bg, cursor="hand2")
@@ -2424,8 +2813,8 @@ class AIManagerApp:
             font=("Segoe UI", 9, "bold"),
             bg=badge_bg,
             fg=badge_fg,
-            padx=10,
-            pady=4,
+            padx=8,
+            pady=3,
             highlightthickness=1,
             highlightbackground=accent,
             highlightcolor=accent,
@@ -2434,7 +2823,7 @@ class AIManagerApp:
         status_badge.pack(side=tk.RIGHT, padx=(8, 0))
 
         label_row = tk.Frame(content, bg=self.CARD_BG)
-        label_row.pack(fill=tk.X, pady=(6, 0))
+        label_row.pack(fill=tk.X, pady=(4, 0))
 
         label_button = tk.Button(
             label_row,
@@ -2443,7 +2832,7 @@ class AIManagerApp:
             relief=tk.FLAT,
             bd=0,
             padx=10,
-            pady=4,
+            pady=3,
             cursor="hand2",
             bg=self.CHIP_BG,
             fg=self.FG,
@@ -2465,7 +2854,7 @@ class AIManagerApp:
             bd=0,
             width=2,
             padx=0,
-            pady=3,
+            pady=2,
             cursor="hand2",
             bg=self.CHIP_BG,
             fg=self.FG,
@@ -2478,58 +2867,28 @@ class AIManagerApp:
         )
         self._mark_card_control(label_delete_button)
 
-        meta = tk.Frame(content, bg=self.CARD_BG, cursor="hand2")
-        meta.pack(fill=tk.X, pady=(6, 0))
-
-        pid_card = tk.Frame(meta, bg=self.CHIP_BG, padx=6, pady=4, cursor="hand2")
-        pid_card.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Label(
-            pid_card,
-            text="PID",
-            font=("Segoe UI", 7, "bold"),
-            bg=self.CHIP_BG,
-            fg=self.MUTED_FG,
-            anchor="w",
-            cursor="hand2",
-        ).pack(anchor="w")
-        pid_value = tk.Label(
-            pid_card,
-            text="",
-            font=("Segoe UI", 8, "bold"),
-            bg=self.CHIP_BG,
-            fg=self.FG,
-            anchor="w",
-            cursor="hand2",
-        )
-        pid_value.pack(anchor="w", pady=(2, 0))
-
-        cpu_card = tk.Frame(meta, bg=self.CHIP_BG, padx=6, pady=4, cursor="hand2")
-        cpu_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
-        tk.Label(
-            cpu_card,
-            text="CPU %",
-            font=("Segoe UI", 7, "bold"),
-            bg=self.CHIP_BG,
-            fg=self.MUTED_FG,
-            anchor="w",
-            cursor="hand2",
-        ).pack(anchor="w")
-        cpu_value = tk.Label(
-            cpu_card,
-            text="",
-            font=("Segoe UI", 8, "bold"),
-            bg=self.CHIP_BG,
-            fg=self.FG,
-            anchor="w",
-            cursor="hand2",
-        )
-        cpu_value.pack(anchor="w", pady=(2, 0))
-
         details = tk.Frame(content, bg=self.CARD_BG, cursor="hand2")
-        details.pack(fill=tk.X, pady=(6, 0))
+        details.pack(fill=tk.X, pady=(4, 0))
 
-        terminal_value = self._create_card_detail(details, "Terminal")
-        cwd_value = self._create_card_detail(details, "Directory")
+        stats_row = tk.Frame(details, bg=self.CARD_BG, cursor="hand2")
+        stats_row.pack(fill=tk.X)
+        pid_value = self._create_card_detail(
+            stats_row,
+            "PID",
+            side=tk.LEFT,
+            expand=True,
+            value_font=("Segoe UI", 8, "bold"),
+        )
+        cpu_value = self._create_card_detail(
+            stats_row,
+            "CPU",
+            side=tk.LEFT,
+            expand=True,
+            padx=(12, 0),
+            value_font=("Segoe UI", 8, "bold"),
+        )
+        terminal_value = self._create_card_detail(details, "Terminal", row_pady=(2, 0))
+        cwd_value = self._create_card_detail(details, "Directory", row_pady=(2, 0))
 
         bundle = {
             "frame": card,
@@ -2549,30 +2908,49 @@ class AIManagerApp:
         self._bind_card_activation(card, p.pid)
         return bundle
 
-    def _create_card_detail(self, parent: tk.Widget, label_text: str) -> tk.Label:
+    def _create_card_detail(
+        self,
+        parent: tk.Widget,
+        label_text: str,
+        *,
+        side=tk.TOP,
+        expand: bool = False,
+        padx: tuple[int, int] = (0, 0),
+        row_pady: tuple[int, int] = (0, 4),
+        value_font: tuple[str, int] | tuple[str, int, str] = ("Segoe UI", 8),
+    ) -> tk.Label:
         row = tk.Frame(parent, bg=self.CARD_BG, cursor="hand2")
-        row.pack(fill=tk.X, pady=(0, 5))
+        pack_kwargs: dict[str, object] = {
+            "side": side,
+            "fill": tk.X,
+            "expand": expand,
+        }
+        if side == tk.LEFT:
+            pack_kwargs["padx"] = padx
+        else:
+            pack_kwargs["pady"] = row_pady
+        row.pack(**pack_kwargs)
         label = tk.Label(
             row,
-            text=label_text.upper(),
-            font=("Segoe UI", 7, "bold"),
+            text=f"{label_text}:",
+            font=("Segoe UI", 8, "bold"),
             bg=self.CARD_BG,
             fg=self.MUTED_FG,
             anchor="w",
             cursor="hand2",
         )
-        label.pack(anchor="w")
+        label.pack(side=tk.LEFT)
         value = tk.Label(
             row,
             text="",
-            font=("Segoe UI", 8),
+            font=value_font,
             bg=self.CARD_BG,
             fg=self.FG,
             anchor="w",
             justify="left",
             cursor="hand2",
         )
-        value.pack(fill=tk.X, expand=True, pady=(1, 0))
+        value.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
         return value
 
     @staticmethod
@@ -2757,8 +3135,8 @@ class AIManagerApp:
         self._retint_card_background(bundle["frame"], status_bg)
         self._update_label_controls(bundle, p)
         bundle["pid_value"].config(text=str(p.pid))
-        bundle["cpu_value"].config(text=f"{p.cpu_percent:.1f}")
-        bundle["cwd_value"].config(text=p.cwd or "(unknown)")
+        bundle["cpu_value"].config(text=f"{p.cpu_percent:.1f}%")
+        bundle["cwd_value"].config(text=self._compact_directory(p.cwd, 42))
         bundle["terminal_value"].config(text=p.terminal_type or "(unknown)")
 
     # ---- Window activation ----
@@ -2804,15 +3182,21 @@ class AIManagerApp:
     def _activate_pid(self, pid: int) -> None:
         proc = self._process_lookup.get(pid)
         if proc is None or not proc.hwnds:
-            self.status_label.config(text=f"No window found for PID {pid}")
+            self.status_label.config(
+                text=f"No window found for PID {pid} | {self._refresh_interval_text()}"
+            )
             return
 
         hwnd = proc.hwnds[0]
         try:
             activate_window(hwnd)
-            self.status_label.config(text=f"Activated window for PID {pid}")
+            self.status_label.config(
+                text=f"Activated window for PID {pid} | {self._refresh_interval_text()}"
+            )
         except Exception as e:
-            self.status_label.config(text=f"Failed to activate: {e}")
+            self.status_label.config(
+                text=f"Failed to activate: {e} | {self._refresh_interval_text()}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2821,7 +3205,7 @@ class AIManagerApp:
 
 def main():
     print("=" * 50)
-    print("  AI Manager - AI CLI Process Monitor")
+    print("  AI CLI Watcher - AI CLI Process Monitor")
     print("=" * 50)
     print()
     print(f"  Started at : {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -2840,10 +3224,10 @@ def main():
     except Exception:
         pass
 
-    app = AIManagerApp(root)
+    app = AICLIWatcherApp(root)
     root.mainloop()
     print()
-    print("AI Manager stopped.")
+    print("AI CLI Watcher stopped.")
 
 
 if __name__ == "__main__":
