@@ -1103,6 +1103,11 @@ def _scan_wsl_processes() -> list[CLIProcess]:
                 if elapsed > previous:
                     tty_age_seconds[tty] = elapsed
 
+            # Ignore WSL processes that are not attached to an interactive TTY.
+            # These often appear as tty "?" and should not be shown as terminal tabs.
+            if not tty or tty == "?":
+                continue
+
             if _is_non_interactive_cli_cmdline(cmdline_str):
                 continue
 
