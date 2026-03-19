@@ -28,7 +28,7 @@ import psutil
 
 REFRESH_INTERVAL_MS = 2000  # auto-refresh every 2 seconds
 CPU_BUSY_THRESHOLD = 2.0    # percent – tree CPU above this = "processing"
-IO_BUSY_THRESHOLD = 1000    # bytes – I/O delta above this = "processing"
+IO_BUSY_THRESHOLD = 1000    # activity score – I/O delta above this = "processing"
 LANDSCAPE_GEOMETRY = "1200x420"
 PORTRAIT_GEOMETRY = "320x760"
 MINIMIZED_GEOMETRY = "220x90"
@@ -646,17 +646,33 @@ def _collect_wsl_tab_ttys(ps_rows: list[dict[str, object]]) -> set[str]:
 
 def _get_tree_io(proc: psutil.Process) -> int:
     """Return the total I/O bytes (read+write) for a process and its children."""
+    def _io_total(io) -> int:
+        # Windows CLIs can stay mostly network/console-bound, so relying only on
+        # read_bytes/write_bytes under-reports activity. Include operation counts
+        # and "other_*" counters when available.
+        total_bytes = (
+            int(getattr(io, "read_bytes", 0) or 0)
+            + int(getattr(io, "write_bytes", 0) or 0)
+            + int(getattr(io, "other_bytes", 0) or 0)
+        )
+        total_count = (
+            int(getattr(io, "read_count", 0) or 0)
+            + int(getattr(io, "write_count", 0) or 0)
+            + int(getattr(io, "other_count", 0) or 0)
+        )
+        return total_bytes + (total_count * 64)
+
     total = 0
     try:
         io = proc.io_counters()
-        total += io.read_bytes + io.write_bytes
+        total += _io_total(io)
     except (psutil.AccessDenied, psutil.NoSuchProcess):
         pass
     try:
         for child in proc.children(recursive=True):
             try:
                 cio = child.io_counters()
-                total += cio.read_bytes + cio.write_bytes
+                total += _io_total(cio)
             except (psutil.AccessDenied, psutil.NoSuchProcess):
                 pass
     except (psutil.AccessDenied, psutil.NoSuchProcess):

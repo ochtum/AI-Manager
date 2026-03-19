@@ -105,7 +105,7 @@ On both Windows and WSL, status is determined by two signals. If either exceeds 
 | Signal | Threshold | Description |
 |--------|-----------|-------------|
 | Tree CPU | 2.0% | Combined CPU usage of the process and all its child processes |
-| I/O Delta | 1,000 bytes | Total I/O growth since the previous scan |
+| I/O Delta | 1,000 activity score | I/O activity growth since the previous scan (Windows includes I/O operation counts in addition to bytes) |
 
 - On Windows, CPU and I/O are read from the process tree via `psutil`
 - On WSL, CPU and I/O are derived from `/proc` CPU ticks and I/O counters
