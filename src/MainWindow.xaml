@@ -1,0 +1,279 @@
+<Window x:Class="AI_CLI_Watcher.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AI CLI Watcher – AI CLI Process Monitor"
+        Icon="app_icon.ico"
+        Width="1200" Height="420"
+        MinWidth="900" MinHeight="320"
+        Background="#1e1e2e"
+        Closing="Window_Closing"
+        LocationChanged="Window_LocationChanged"
+        SizeChanged="Window_SizeChanged">
+
+    <Window.Resources>
+        <ResourceDictionary />
+    </Window.Resources>
+
+    <Grid x:Name="RootGrid">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border x:Name="HeaderBorder" Grid.Row="0" Background="{StaticResource HeadingBgBrush}" Padding="16,10">
+            <Grid x:Name="HeaderGrid">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock x:Name="TitleLabel" Grid.Column="0" Grid.Row="0"
+                           Text="AI CLI Watcher"
+                           FontSize="18" FontWeight="Bold" FontFamily="Segoe UI"
+                           Foreground="{StaticResource AccentPurpleBrush}"
+                           VerticalAlignment="Center" />
+
+                <StackPanel x:Name="ControlsPanel" Grid.Column="2" Grid.Row="0"
+                            Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="LayoutButton" Content="Cards"
+                            Style="{StaticResource AccentButton}"
+                            Click="LayoutButton_Click" />
+                    <Button x:Name="MinimizeButton" Content="Minimize"
+                            Style="{StaticResource AccentButton}"
+                            Margin="4,0,0,0"
+                            Click="MinimizeButton_Click" />
+                    <CheckBox x:Name="TopMostCheckBox" Content="Always on Top"
+                              Style="{StaticResource DarkCheckBox}"
+                              Margin="8,0,0,0"
+                              Checked="TopMostCheckBox_Changed"
+                              Unchecked="TopMostCheckBox_Changed" />
+                </StackPanel>
+
+                <TextBlock x:Name="StatusLabel" Grid.Column="3" Grid.Row="0"
+                           FontSize="10" FontFamily="Segoe UI"
+                           Foreground="{StaticResource MutedFgBrush}"
+                           VerticalAlignment="Center"
+                           TextAlignment="Right"
+                           Margin="16,0,0,0" />
+            </Grid>
+        </Border>
+
+        <!-- Content Area -->
+        <Grid x:Name="ContentGrid" Grid.Row="1" Margin="8">
+
+            <!-- Table View (Landscape) -->
+            <DataGrid x:Name="ProcessDataGrid"
+                      Style="{StaticResource DarkDataGrid}"
+                      Visibility="Visible"
+                      MouseDoubleClick="DataGrid_MouseDoubleClick"
+                      PreviewKeyDown="DataGrid_PreviewKeyDown">
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="AI CLI" Width="190" MinWidth="150">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding DisplayName}" FontWeight="Bold"
+                                           Foreground="{Binding CliAccentBrush}" Padding="2,0" />
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="PID" Width="80" MinWidth="60"
+                                        Binding="{Binding Pid}">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="HorizontalAlignment" Value="Center" />
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="Status" Width="160" MinWidth="120"
+                                        Binding="{Binding StatusText}" />
+                    <DataGridTextColumn Header="CPU %" Width="80" MinWidth="60"
+                                        Binding="{Binding CpuText}">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="HorizontalAlignment" Value="Center" />
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTemplateColumn Header="Label" Width="140" MinWidth="110">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <Button Content="{Binding LabelDisplayText}"
+                                        Background="{Binding LabelBgBrush}"
+                                        Foreground="{Binding LabelFgBrush}"
+                                        FontSize="10" FontWeight="{Binding LabelFontWeight}"
+                                        Padding="10,2" Margin="2"
+                                        BorderThickness="{Binding LabelBorderThickness}"
+                                        BorderBrush="#72789c"
+                                        Cursor="Hand"
+                                        Click="LabelButton_Click"
+                                        Tag="{Binding Pid}">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    CornerRadius="2"
+                                                    Padding="{TemplateBinding Padding}">
+                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Directory" Width="300" MinWidth="150"
+                                        Binding="{Binding DirectoryDisplay}" />
+                    <DataGridTextColumn Header="Terminal" Width="*" MinWidth="150"
+                                        Binding="{Binding TerminalType}" />
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <!-- Cards View (Portrait) -->
+            <ScrollViewer x:Name="CardsScrollViewer" Visibility="Collapsed"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Background="Transparent">
+                <ItemsControl x:Name="CardsItemsControl">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Margin="0,0,0,4" CornerRadius="0"
+                                    Background="{Binding StatusBgBrush}"
+                                    BorderBrush="{Binding StatusAccentBrush}"
+                                    BorderThickness="1"
+                                    Cursor="Hand"
+                                    MouseLeftButtonDown="Card_MouseLeftButtonDown">
+                                <DockPanel>
+                                    <Border DockPanel.Dock="Left" Width="3"
+                                            Background="{Binding StatusAccentBrush}" />
+                                    <StackPanel Margin="6">
+                                        <DockPanel>
+                                            <Border DockPanel.Dock="Right"
+                                                    VerticalAlignment="Center"
+                                                    Background="{Binding StatusBadgeBgBrush}"
+                                                    BorderBrush="{Binding StatusAccentBrush}"
+                                                    BorderThickness="1"
+                                                    Padding="8,3" Margin="8,0,0,0">
+                                                <TextBlock Text="{Binding StatusText}"
+                                                           FontSize="12" FontWeight="Bold"
+                                                           Foreground="White" FontFamily="Segoe UI" />
+                                            </Border>
+                                            <TextBlock Text="{Binding DisplayName}"
+                                                       FontSize="13" FontWeight="Bold"
+                                                       Foreground="{Binding CliAccentBrush}"
+                                                       TextWrapping="Wrap"
+                                                       FontFamily="Segoe UI" />
+                                        </DockPanel>
+
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <Button Content="{Binding LabelDisplayText}"
+                                                    Background="{Binding LabelBgBrush}"
+                                                    Foreground="{Binding LabelFgBrush}"
+                                                    FontSize="10" FontWeight="{Binding LabelFontWeight}"
+                                                    Padding="10,3"
+                                                    BorderThickness="{Binding LabelBorderThickness}"
+                                                    BorderBrush="#585b70"
+                                                    Cursor="Hand"
+                                                    Click="LabelButton_Click"
+                                                    Tag="{Binding Pid}">
+                                                <Button.Template>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border Background="{TemplateBinding Background}"
+                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                CornerRadius="2"
+                                                                Padding="{TemplateBinding Padding}">
+                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        </Border>
+                                                    </ControlTemplate>
+                                                </Button.Template>
+                                            </Button>
+                                            <Button Content="x" FontSize="10" FontWeight="Bold"
+                                                    Background="#181825" Foreground="#cdd6f4"
+                                                    Padding="4,2" Margin="6,0,0,0"
+                                                    BorderThickness="1" BorderBrush="#585b70"
+                                                    Cursor="Hand"
+                                                    Visibility="{Binding LabelDeleteVisibility}"
+                                                    Click="LabelDeleteButton_Click"
+                                                    Tag="{Binding Pid}">
+                                                <Button.Template>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border Background="{TemplateBinding Background}"
+                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                CornerRadius="2"
+                                                                Padding="{TemplateBinding Padding}">
+                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        </Border>
+                                                    </ControlTemplate>
+                                                </Button.Template>
+                                            </Button>
+                                        </StackPanel>
+
+                                        <Grid Margin="0,4,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="PID:" FontSize="10" FontWeight="Bold"
+                                                       Foreground="#a6adc8" FontFamily="Segoe UI" />
+                                            <TextBlock Grid.Column="1" Text="{Binding Pid}" FontSize="10" FontWeight="Bold"
+                                                       Foreground="#cdd6f4" Margin="4,0,12,0" FontFamily="Segoe UI" />
+                                            <TextBlock Grid.Column="2" Text="CPU:" FontSize="10" FontWeight="Bold"
+                                                       Foreground="#a6adc8" FontFamily="Segoe UI" />
+                                            <TextBlock Grid.Column="3" Text="{Binding CpuDisplayText}" FontSize="10" FontWeight="Bold"
+                                                       Foreground="#cdd6f4" Margin="4,0,0,0" FontFamily="Segoe UI" />
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                            <TextBlock Text="Terminal:" FontSize="10" FontWeight="Bold"
+                                                       Foreground="#a6adc8" FontFamily="Segoe UI" />
+                                            <TextBlock Text="{Binding TerminalType}" FontSize="10"
+                                                       Foreground="#cdd6f4" Margin="4,0,0,0"
+                                                       TextWrapping="Wrap" FontFamily="Segoe UI" />
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                            <TextBlock Text="Directory:" FontSize="10" FontWeight="Bold"
+                                                       Foreground="#a6adc8" FontFamily="Segoe UI" />
+                                            <TextBlock Text="{Binding DirectoryCardDisplay}" FontSize="10"
+                                                       Foreground="#cdd6f4" Margin="4,0,0,0"
+                                                       TextWrapping="Wrap" FontFamily="Segoe UI" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </DockPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+
+        </Grid>
+
+        <!-- Minimized View (direct child of RootGrid, spans all rows) -->
+        <Grid x:Name="MinimizedPanel" Grid.Row="0" Grid.RowSpan="3"
+              Visibility="Collapsed"
+              Background="#1e1e2e"
+              VerticalAlignment="Stretch" HorizontalAlignment="Stretch">
+            <Button Content="Restore" Style="{StaticResource RestoreButton}"
+                    VerticalAlignment="Center" HorizontalAlignment="Center"
+                    Click="RestoreButton_Click" />
+        </Grid>
+
+        <!-- Footer -->
+        <TextBlock x:Name="HintLabel" Grid.Row="2"
+                   Text="Double-click a process row or card, or press Enter on a selected row, to activate the process window"
+                   FontSize="9" FontFamily="Segoe UI"
+                   Foreground="#6c7086"
+                   HorizontalAlignment="Center"
+                   Margin="0,0,0,6" />
+    </Grid>
+</Window>

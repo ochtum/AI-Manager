@@ -1,0 +1,63 @@
+<Window x:Class="AI_CLI_Watcher.Views.LabelEditorDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Process Label"
+        Width="380" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#313244"
+        ShowInTaskbar="False"
+        WindowStyle="ToolWindow">
+
+    <StackPanel Margin="14">
+        <!-- Directory -->
+        <TextBlock Text="Directory" FontSize="10" FontWeight="Bold"
+                   Foreground="#a6adc8" FontFamily="Segoe UI" />
+        <TextBlock x:Name="DirectoryText" FontSize="10" Foreground="#cdd6f4"
+                   TextWrapping="Wrap" Margin="0,2,0,10" FontFamily="Segoe UI" />
+
+        <!-- Label Name -->
+        <TextBlock Text="Label name" FontSize="10" FontWeight="Bold"
+                   Foreground="#a6adc8" FontFamily="Segoe UI" />
+        <TextBox x:Name="NameTextBox" FontSize="12" Margin="0,2,0,10"
+                 Background="#24273a" Foreground="#cdd6f4" BorderBrush="#585b70"
+                 CaretBrush="#cdd6f4" Padding="4,3" FontFamily="Segoe UI" />
+
+        <!-- Color Code -->
+        <TextBlock Text="Color code" FontSize="10" FontWeight="Bold"
+                   Foreground="#a6adc8" FontFamily="Segoe UI" />
+        <TextBox x:Name="ColorTextBox" FontSize="12" Margin="0,2,0,8"
+                 Background="#24273a" Foreground="#cdd6f4" BorderBrush="#585b70"
+                 CaretBrush="#cdd6f4" Padding="4,3" FontFamily="Consolas" />
+
+        <!-- Presets -->
+        <TextBlock Text="Presets" FontSize="10" FontWeight="Bold"
+                   Foreground="#a6adc8" FontFamily="Segoe UI" />
+        <WrapPanel x:Name="PresetPanel" Margin="0,4,0,10" />
+
+        <!-- Preview -->
+        <Border x:Name="PreviewBorder" CornerRadius="3" Padding="10,4"
+                HorizontalAlignment="Left" Margin="0,0,0,4" Cursor="Hand">
+            <TextBlock x:Name="PreviewText" FontSize="10" FontWeight="Bold" FontFamily="Segoe UI" />
+        </Border>
+        <TextBlock x:Name="PreviewHint" FontSize="10" Foreground="#a6adc8"
+                   Margin="0,4,0,10" FontFamily="Segoe UI" />
+
+        <!-- Actions -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button x:Name="DeleteButton" Content="Delete" Grid.Column="0"
+                    Click="DeleteButton_Click" Visibility="Collapsed"
+                    Style="{StaticResource AccentButton}" />
+            <Button Content="Cancel" Grid.Column="2" Click="CancelButton_Click"
+                    Style="{StaticResource AccentButton}" Margin="0,0,8,0" />
+            <Button Content="Save" Grid.Column="3" Click="SaveButton_Click"
+                    Style="{StaticResource AccentButton}" />
+        </Grid>
+    </StackPanel>
+</Window>
