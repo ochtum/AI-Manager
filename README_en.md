@@ -40,7 +40,7 @@ AI CLI Watcher is a Windows desktop application for monitoring the runtime statu
 ## Requirements
 
 - **OS**: Windows 10 / 11
-- **Runtime for distribution builds**: `.NET 10 Runtime` (for `app-framework-dependent`)
+- **Runtime for distribution builds**: No additional runtime required
 - **Build environment from source**: `.NET 10 SDK`
 - **If you want WSL monitoring**: WSL, with `python3` recommended inside each distro
 
@@ -49,25 +49,19 @@ However, for WSL monitoring, working directory retrieval, I/O collection, and mo
 
 ## Launch
 
-Download the `app-framework-dependent` folder from Releases, extract it, and run `AI-CLI-Watcher.exe` inside it.
-
-Note: Running `app-framework-dependent` requires `.NET 10 Runtime` (or `.NET 10 SDK`). If you are not sure whether it is installed, or if you do not want to install it, use the `app-self-contained` folder instead.
+Download the distributed `app` folder from Releases, extract it, and run `AI-CLI-Watcher.exe` inside it.
+No additional `.NET Runtime` installation is required.
 
 ---
 
 If you want to build from `src`, run the PowerShell script as follows.
 
-- Framework-dependent build (if `.NET 10 SDK` is installed)
-
 ```powershell
 .\publish.ps1 -CleanOutput
 ```
 
-- Self-contained build (if `.NET 10 SDK` is installed and you do not want the target machine to require .NET)
-
-```powershell
-.\publish.ps1 -SelfContained -CleanOutput
-```
+`publish.ps1` uses self-contained single-file publish, so the root of `app/` is normally just `AI-CLI-Watcher.exe` and `settings.json`.
+If you are switching from the older publish layout, run it once with `-CleanOutput` to remove stale files.
 
 ## Usage
 

@@ -2,7 +2,6 @@
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
-    [switch]$SelfContained,
     [switch]$CleanOutput
 )
 
@@ -12,9 +11,22 @@ $ErrorActionPreference = "Stop"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectPath = Join-Path $rootDir "src/AI-CLI-Watcher.csproj"
 $outputDir = Join-Path $rootDir "app"
+$assemblyName = [System.IO.Path]::GetFileNameWithoutExtension($projectPath)
+$exeFileName = "$assemblyName.exe"
 $settingsFileName = "settings.json"
 $settingsPath = Join-Path $outputDir $settingsFileName
 $settingsBackupPath = $null
+$obsoleteRootArtifacts = @(
+    "$assemblyName.deps.json"
+    "$assemblyName.dll"
+    "$assemblyName.pdb"
+    "$assemblyName.runtimeconfig.json"
+    "D3DCompiler_47_cor3.dll"
+    "PenImc_cor3.dll"
+    "PresentationNative_cor3.dll"
+    "vcruntime140_cor3.dll"
+    "wpfgfx_cor3.dll"
+)
 
 if (-not (Test-Path $projectPath)) {
     throw "Project file not found: $projectPath"
@@ -39,7 +51,11 @@ $publishArgs = @(
     "-r"
     $Runtime
     "--self-contained"
-    $(if ($SelfContained) { "true" } else { "false" })
+    "true"
+    "-p:PublishSingleFile=true"
+    "-p:IncludeNativeLibrariesForSelfExtract=true"
+    "-p:DebugType=None"
+    "-p:DebugSymbols=false"
     "-o"
     $outputDir
 )
@@ -47,7 +63,7 @@ $publishArgs = @(
 Write-Host "Publishing AI-CLI-Watcher..." -ForegroundColor Cyan
 Write-Host "  Configuration : $Configuration"
 Write-Host "  Runtime       : $Runtime"
-Write-Host "  Self-contained: $($SelfContained.IsPresent)"
+Write-Host "  Package mode  : self-contained single-file"
 Write-Host "  Output        : $outputDir"
 
 try {
@@ -55,6 +71,13 @@ try {
 
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet publish failed with exit code $LASTEXITCODE"
+    }
+
+    foreach ($artifact in $obsoleteRootArtifacts) {
+        $artifactPath = Join-Path $outputDir $artifact
+        if (Test-Path $artifactPath) {
+            Remove-Item -Path $artifactPath -Force
+        }
     }
 }
 finally {
@@ -66,4 +89,5 @@ finally {
 
 Write-Host ""
 Write-Host "Publish completed." -ForegroundColor Green
-Write-Host "Copy the entire 'app' folder for distribution."
+Write-Host "Expected root output: $exeFileName and optional $settingsFileName."
+Write-Host "If you are switching from the old layout, run with -CleanOutput once to remove stale files."
