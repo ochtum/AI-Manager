@@ -9,6 +9,10 @@ AI CLI Watcher is a Windows desktop application for monitoring the runtime statu
 
 - You can view the status of each process in a single list: processing or waiting for user input.
 - You can double-click a process to bring its terminal window to the foreground.
+- It also supports bringing Windows Terminal to the foreground even when it is open on another virtual desktop.
+
+> [!IMPORTANT]
+> Even if you use Windows virtual desktops, you can activate a Windows Terminal window from the list or cards view when it is open on a different desktop.
 
 ## Features
 
@@ -19,6 +23,7 @@ AI CLI Watcher is a Windows desktop application for monitoring the runtime statu
 | Color-coded display | Waiting processes are shown in green tones, and processing ones in red tones, so they are easy to distinguish at a glance |
 | View mode switching | Switch between `Table` (list), `Cards` (vertical cards), and `Minimize` views. Window size and position are stored separately for each mode |
 | Label management | Save a label name and color for each working directory. Labels can be edited from the Label column in `Table` view or from the `+ Label` button in `Cards` view |
+| Virtual desktop support | Windows Terminal opened on another virtual desktop can also be activated from the list or cards view |
 | Window activation | Double-click a row or card to activate the corresponding CLI terminal window. The app also attempts to restore minimized windows |
 | Working directory display | Shows the working directory of each CLI so that multiple instances can be distinguished |
 | Terminal type display | Shows the terminal type, such as Windows Terminal, PowerShell, or Command Prompt |
@@ -95,7 +100,7 @@ Displayed content changes depending on the current view mode. The following imag
 | `Minimize` button | Switches to a compact screen that only shows the `Restore` button |
 | `Restore` button | Returns from the minimized screen to the previous view and position, then refreshes immediately |
 | `+ Label` button | Click `+ Label` to add or edit a label |
-| Double-click / Enter | Activates the selected CLI terminal window and also attempts to restore minimized windows |
+| Double-click / Enter | Activates the selected CLI terminal window and also attempts to restore minimized windows, including Windows Terminal on another virtual desktop |
 | Status bar display | In addition to the current time, the status bar shows either `Auto refresh` or the latest `Scan` duration |
 | `Always on Top` checkbox | When enabled, the AI CLI Watcher window stays above all other windows |
 
