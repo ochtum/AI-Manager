@@ -1,13 +1,12 @@
-__pycache__/
-*.pyc
-*.pyo
 .env
-.venv/
 .claude
 .vscode
 css/
 venv/
 dist/
 build/
+**/obj/**
+**/bin/**
+app/
 *.egg-info/
 settings.json

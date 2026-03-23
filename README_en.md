@@ -1,152 +1,204 @@
 <p align="left">
   <a href="README_en.md"><img src="https://img.shields.io/badge/English Mode-blue.svg" alt="English"></a>
-  <a href="README.md"><img src="https://img.shields.io/badge/日本語 モード-red.svg" alt="日本語"></a>
+  <a href="README.md"><img src="https://img.shields.io/badge/日本語 モード-red.svg" alt="Japanese"></a>
 </p>
 
 # AI CLI Watcher - AI CLI Process Monitor
 
-A Windows desktop application that monitors AI CLI tools (Claude Code / Codex CLI / GitHub Copilot CLI) in real time and displays their operational status.
+AI CLI Watcher is a Windows desktop application for monitoring the runtime status of AI CLI tools (Claude Code / Codex CLI / GitHub Copilot CLI) in real time.
+
+- You can view the status of each process in a single list: processing or waiting for user input.
+- You can double-click a process to bring its terminal window to the foreground.
+- It also supports bringing Windows Terminal to the foreground even when it is open on another virtual desktop.
+
+> [!IMPORTANT]
+> Even if you use Windows virtual desktops, you can activate a Windows Terminal window from the list or cards view when it is open on a different desktop.
 
 ## Features
 
 | Feature | Description |
-|---------|-------------|
-| Automatic process detection | Automatically detects AI CLI processes running on Windows and WSL |
-| Status display | Shows each process state as "Processing" or "Waiting for input" |
-| Color-coded status | Green background for waiting, red background for processing — status is visible at a glance |
-| Display modes | Supports the `Table` (list) view, the `Cards` (vertical cards) view, and the `Minimize` (minimized) view. Size and position are stored independently for each view |
-| Label management | Saves a label name and color per working directory. Labels can be edited from the `Label` column in `Table` view and the `+ Label` button in `Cards` view |
-| Window switching | Double-click a process row or card to bring its terminal window to the foreground. The app also attempts to restore minimized terminal windows |
-| Working directory display | Shows the directory each CLI is running in, making it easy to distinguish multiple instances |
-| Terminal type display | Shows the terminal type such as Windows Terminal, PowerShell, Command Prompt, etc. |
-| Always on Top | The `Always on Top` checkbox keeps the window above all others (setting is persisted automatically) |
-| 2-second auto-refresh | In `Table` and `Cards`, process information is refreshed every 2 seconds. In `Minimize` view, refresh pauses and runs immediately on `Restore` |
+| ------- | ----------- |
+| Automatic process detection | Automatically detects AI CLI processes running on both Windows and WSL |
+| Status display | Shows each process state as `Processing` or `Waiting for input` |
+| Color-coded display | Waiting processes are shown in green tones, and processing ones in red tones, so they are easy to distinguish at a glance |
+| View mode switching | Switch between `Table` (list), `Cards` (vertical cards), and `Minimize` views. Window size and position are stored separately for each mode |
+| Label management | Save a label name and color for each working directory. Labels can be edited from the Label column in `Table` view or from the `+ Label` button in `Cards` view |
+| Virtual desktop support | Windows Terminal opened on another virtual desktop can also be activated from the list or cards view |
+| Window activation | Double-click a row or card to activate the corresponding CLI terminal window. The app also attempts to restore minimized windows |
+| Working directory display | Shows the working directory of each CLI so that multiple instances can be distinguished |
+| Terminal type display | Shows the terminal type, such as Windows Terminal, PowerShell, or Command Prompt |
+| Always on Top | The `Always on Top` checkbox keeps the window above others, and the setting is saved automatically |
+| Auto refresh | In `Table` and `Cards` views, the list refreshes every 2 seconds by default and can be changed in `settings.json`. In `Minimize` view, refresh is paused and runs immediately when `Restore` is pressed |
 
 ## Supported CLIs
 
 | CLI | Windows | WSL |
-|-----|---------|-----|
+| --- | ------- | --- |
 | Claude Code (Anthropic) | ✅ | ✅ |
 | Codex CLI (OpenAI) | ✅ | ✅ |
 | GitHub Copilot CLI | ✅ | ✅ |
 
 - Supports simultaneous detection of multiple instances of each CLI
-- Detects processes launched via node/npm/npx wrappers
-- Filters out false positives such as VS Code extension background processes and the Windows Copilot app
+- Can also detect processes launched via node/npm/npx
+- Excludes false positives such as VS Code extension background processes and the Windows Copilot app
 
-## System Requirements
+## Requirements
 
 - **OS**: Windows 10 / 11
-- **Python**: 3.10 or later
-- **Dependencies**: psutil
+- **Runtime for distribution builds**: No additional runtime required
+- **Build environment from source**: `.NET 10 SDK`
+- **If you want WSL monitoring**: WSL, with `python3` recommended inside each distro
 
-## Setup
+Even without `python3`, Windows-side monitoring and basic WSL process detection still work.
+However, for WSL monitoring, working directory retrieval, I/O collection, and more accurate CPU/I/O-based status detection will be limited.
 
-### 1. Install dependencies
+## Launch
 
+Download the distributed `app` folder from Releases, extract it, and run `AI-CLI-Watcher.exe` inside it.
+No additional `.NET Runtime` installation is required.
+
+---
+
+If you want to build from `src`, run the PowerShell script as follows.
+
+```powershell
+.\publish.ps1 -CleanOutput
 ```
-pip install -r requirements.txt
-```
 
-### 2. Launch
-
-#### Launch from batch file (recommended)
-
-Double-click `scripts\windows\launch_ai_cli_watcher.bat`.
-
-#### Launch from command line
-
-```
-python ai_cli_watcher.py
-```
+`publish.ps1` uses self-contained single-file publish, so the root of `app/` is normally just `AI-CLI-Watcher.exe` and `settings.json`.
+If you are switching from the older publish layout, run it once with `-CleanOutput` to remove stale files.
 
 ## Usage
 
 ### Screen Layout
 
-The visible controls differ by display mode. The following images show each mode.
+Displayed content changes depending on the current view mode. The following images show examples of each mode.
 
-| Display Mode | Sample Image |
-|--------------|--------------|
+| View Mode | Sample Image |
+| --------- | ------------ |
 | `Table` | ![](./images/00001.jpg) |
 | `Cards` | ![](./images/00002.jpg) |
 | `Minimize` | ![](./images/00003.jpg) |
 
-### Item Descriptions
+### Field Descriptions
 
-| Item | Description |
-|------|-------------|
-| AI CLI | CLI name. For WSL processes, `(WSL:<distro name>)` is appended |
+| Field | Description |
+| ----- | ----------- |
+| AI CLI | The CLI name. For WSL processes, `(WSL:<distribution name>)` is appended |
 | PID | Process ID |
-| Status | `▶ Processing` (busy) or `⏸ Waiting for input` (idle) |
-| CPU % | Combined CPU usage across the entire process tree |
-| Label | Label name. In `Table`, it appears in the Label field and shows `+ Label` when unset or `No Label` when no directory is available. In `Cards`, it appears as the `+ Label` button or as the saved label on each card |
-| Directory | The directory where the CLI is running. Long paths are shortened to keep the tail visible |
-| Terminal | Terminal type (Windows Terminal, PowerShell, etc.) |
+| Status | `▶ Processing` or `⏸ Waiting for input` |
+| CPU % | CPU usage of the entire process tree |
+| Label | Label name. In `Table` view, this appears in the Label column. If unset, `+ Label` is shown. If the directory is unavailable, `No Label` is shown. In `Cards` view, it appears as the `+ Label` button or as the saved label on the card |
+| Directory | The CLI working directory. Long paths are shortened while preserving the end of the path |
+| Terminal | The terminal type, such as Windows Terminal or PowerShell |
 
 ### Controls
 
 | Action | Behavior |
-|--------|----------|
-| `Cards` / `Table` button | Switches between `Table` and `Cards`. Each view remembers its own size and position |
-| `Minimize` button | Switches to a compact view that only shows the `Restore` button |
-| `Restore` button | Returns from the compact `Minimize` view to the previous display and position, then refreshes immediately |
+| ------ | -------- |
+| `Cards` / `Table` button | Switches between `Table` and `Cards` views. Size and position are saved independently for each view |
+| `Minimize` button | Switches to a compact screen that only shows the `Restore` button |
+| `Restore` button | Returns from the minimized screen to the previous view and position, then refreshes immediately |
 | `+ Label` button | Click `+ Label` to add or edit a label |
-| Double-click / Enter | Brings the selected CLI's terminal window to the foreground and attempts to restore minimized terminal windows |
-| `Auto refresh: 2s` indicator | The process list refreshes automatically every 2 seconds |
-| `Always on Top` checkbox | When checked, the AI CLI Watcher window stays above all other windows |
+| Double-click / Enter | Activates the selected CLI terminal window and also attempts to restore minimized windows, including Windows Terminal on another virtual desktop |
+| Status bar display | In addition to the current time, the status bar shows either `Auto refresh` or the latest `Scan` duration |
+| `Always on Top` checkbox | When enabled, the AI CLI Watcher window stays above all other windows |
 
-Labels cannot be saved for processes whose working directory is unavailable.
+Labels cannot be saved for processes whose working directory cannot be determined.
 
-### Status Detection Logic
+### Status Determination Logic
 
-On both Windows and WSL, status is determined by two signals. If either exceeds its threshold, the process is marked as `Processing`; otherwise it is `Waiting for input`.
+On both Windows and WSL, status is determined using the following two signals. If either one exceeds its threshold, the status becomes `Processing`. If both are below their thresholds, the status becomes `Waiting for input`.
 
 | Signal | Threshold | Description |
-|--------|-----------|-------------|
-| Tree CPU | 2.0% | Combined CPU usage of the process and all its child processes |
-| I/O Delta | 1,000 activity score | I/O activity growth since the previous scan (Windows includes I/O operation counts in addition to bytes) |
+| ------ | --------- | ----------- |
+| Tree CPU | 2.0% | Total CPU usage of the process and all child processes |
+| I/O Delta | 1,000 activity score | Increase in I/O activity since the previous scan. On Windows, this includes I/O operation counts in addition to bytes |
 
-- On Windows, CPU and I/O are read from the process tree via `psutil`
-- On WSL, CPU and I/O are derived from `/proc` CPU ticks and I/O counters
+- On Windows, the app uses a native C# / Win32-based implementation to gather process-tree information
+- On WSL, the app uses `ps` and `/proc`, and when `python3` is available it also retrieves CPU ticks, I/O information, and working directories
 
-### Persisted Settings
+### Settings Persistence
 
-The following settings are saved in `settings.json` and restored across application restarts.
-If `settings.json` is missing, unreadable as JSON, or has an invalid settings structure, the app recreates it on startup using only managed settings, preserving valid values and filling missing ones with system defaults.
+The following settings are saved in `settings.json` and preserved after the application exits.
+If `settings.json` does not exist at startup, cannot be parsed as JSON, or has an invalid configuration, the application automatically recreates it by filling and normalizing only the managed settings with system default values.
 
-| Setting | Stored in |
-|---------|-----------|
+| Setting | Storage |
+| ------- | ------- |
 | `Always on Top` checkbox state | `settings.json` (`always_on_top`) |
-| Last normal display mode (`Table` or `Cards`) | `settings.json` (`layout_mode`) |
-| Window size and position for each view (`Table` / `Cards` / `Minimize`) | `settings.json` (`window_geometries.landscape` / `portrait` / `minimized`) |
-| Label name and color per working directory | `settings.json` (`process_labels`) |
+| Last normal view mode used (`Table` or `Cards`) | `settings.json` (`layout_mode`) |
+| Auto refresh interval | `settings.json` (`refresh_interval_ms`) |
+| Detailed status bar display mode | `settings.json` (`status_detail_mode`) |
+| Window size and position for each view mode (`Table` / `Cards` / `Minimize`) | `settings.json` (`window_geometries.landscape` / `portrait` / `minimized`) |
+| Label name and color for each working directory | `settings.json` (`process_labels`) |
+
+The main settings are as follows.
+
+| Key | Type | Default | Allowed values / Description |
+| --- | ---- | ------- | ---------------------------- |
+| `always_on_top` | boolean | `false` | `true` / `false` |
+| `layout_mode` | string | `"landscape"` | `"landscape"` / `"portrait"` |
+| `refresh_interval_ms` | number | `2000` | `1000`, `2000`, `3000`, `5000`. Invalid values are normalized to `2000` |
+| `status_detail_mode` | string | `"refresh_interval"` | `"refresh_interval"` / `"refresh_interval_ms"` show the refresh interval, and `"scan_duration"` / `"scan_duration_ms"` show the latest scan duration |
+
+Example:
+
+```json
+{
+  "always_on_top": false,
+  "layout_mode": "landscape",
+  "refresh_interval_ms": 2000,
+  "status_detail_mode": "refresh_interval"
+}
+```
 
 ## File Structure
 
-```
+```text
 AI-CLI-Watcher/
-├── ai_cli_watcher.py        # Main application
-├── requirements.txt         # Dependencies (psutil)
-├── settings.json            # User settings (auto-generated)
-├── .gitignore
-├── scripts/
-│   └── windows/
-│       └── launch_ai_cli_watcher.bat   # Launch script
-└── README.md                # Documentation (Japanese)
+├── .gitignore                   # Root ignore settings
+├── LICENSE                      # License
+├── README.md                    # Japanese README
+├── README_en.md                 # English README
+├── publish.ps1                  # Build script for distribution
+├── images/                      # Screenshot samples used in the README
+│   ├── 00001.jpg
+│   ├── 00002.jpg
+│   └── 00003.jpg
+└── src/
+    ├── .gitignore               # Ignore settings for build artifacts
+    ├── AI-CLI-Watcher.sln       # Solution file
+    ├── AI-CLI-Watcher.csproj    # WPF project definition
+    ├── App.xaml                 # Application definition
+    ├── App.xaml.cs              # Application initialization
+    ├── MainWindow.xaml          # Main window UI
+    ├── MainWindow.xaml.cs       # Main window logic
+    ├── AssemblyInfo.cs          # Assembly information
+    ├── app_icon.ico             # Application icon
+    ├── Helpers/
+    │   └── ColorHelper.cs       # Color helper
+    ├── Models/
+    │   ├── AppSettings.cs       # Settings model
+    │   ├── CliDefinition.cs     # Monitored CLI definitions
+    │   └── CliProcess.cs        # Detected process model
+    ├── Services/
+    │   ├── ProcessScanner.cs    # Windows-side process detection
+    │   ├── SettingsService.cs   # Settings load/save logic
+    │   ├── Win32Api.cs          # Win32 API integration
+    │   └── WslScanner.cs        # WSL-side process detection
+    ├── Themes/
+    │   └── DarkTheme.xaml       # Theme definition
+    └── Views/
+        ├── LabelEditorDialog.xaml    # Label editor dialog UI
+        └── LabelEditorDialog.cs      # Label editor dialog logic
 ```
 
-## Technical Notes
-
-- Built with **pure Python + tkinter + ctypes**. PowerShell is not used at all.
-- **Win32 API (ctypes)**: Uses `EnumWindows`, `SetForegroundWindow`, `AttachConsole`, `GetConsoleWindow`, and other APIs to detect and activate windows.
-- **WSL support**: Detects processes inside WSL using `wsl --list` and `wsl -d <distro> -- ps -eo ...`. Working directories are resolved via batched `readlink` calls.
-- **Window switching**: Even in multi-tab environments like Windows Terminal, the correct tab HWND is resolved via `AttachConsole`/`GetConsoleWindow`, and the app restores parent windows when needed before bringing them to the foreground.
+`app/`, `src/bin/`, `src/obj/`, and `settings.json` are omitted here because they are generated during build or runtime.
 
 ## Verification Status
 
-| Environment | CLI | Status |
-|-------------|-----|--------|
+| Environment | CLI | Verification |
+| ----------- | --- | ------------ |
 | Windows | Claude Code | ✅ Verified |
 | Windows | Codex CLI | ✅ Verified |
 | Windows | GitHub Copilot CLI | ✅ Verified |
@@ -154,4 +206,4 @@ AI-CLI-Watcher/
 | WSL | Claude Code | ✅ Verified |
 | WSL | GitHub Copilot CLI | ✅ Verified |
 
-## ❗This project is licensed under the MIT License, see the LICENSE file for details
+## ❗This project is provided under the MIT License. See the LICENSE file for details.
