@@ -10,8 +10,12 @@ public partial class WslScanner
 {
     private readonly Dictionary<(string distro, int pid), (double time, int ticks)> _prevCpu = new();
     private readonly Dictionary<(string distro, int pid), long> _prevIo = new();
+    private readonly Dictionary<(string distro, int pid), long> _headlessSince = new();
     private readonly Dictionary<string, int> _clkTck = new();
     private string? _defaultDistro;
+
+    public bool ShowHeadlessWslProcesses { get; set; }
+    public int HeadlessWslGraceSeconds { get; set; } = Constants.DefaultHeadlessWslGraceSeconds;
 
     /// <summary>
     /// Callback to resolve console HWND for a PID. Must be set to a UI-thread-safe
@@ -23,6 +27,7 @@ public partial class WslScanner
     public List<CliProcess> ScanWslProcesses()
     {
         var results = new List<CliProcess>();
+        var observedKeys = new HashSet<(string distro, int pid)>();
         List<string> distros;
         try
         {
@@ -130,16 +135,43 @@ public partial class WslScanner
 
                 foreach (var (tty, proc) in ttyProcs)
                 {
+                    var key = (proc.WslDistro, proc.Pid);
+                    observedKeys.Add(key);
+
                     if (ttyHwnds.TryGetValue(tty, out var hwnd))
+                    {
                         proc.Hwnds = [hwnd];
-                    results.Add(proc);
+                        _headlessSince.Remove(key);
+                        results.Add(proc);
+                        continue;
+                    }
+
+                    if (ShouldKeepHeadless(proc))
+                        results.Add(proc);
                 }
             }
             catch { }
         }
 
-        CleanStaleEntries(results);
+        CleanStaleEntries(observedKeys);
         return results;
+    }
+
+    private bool ShouldKeepHeadless(CliProcess proc)
+    {
+        if (ShowHeadlessWslProcesses) return true;
+
+        int graceSeconds = Math.Max(0, HeadlessWslGraceSeconds);
+        long now = Environment.TickCount64 / 1000;
+        var key = (proc.WslDistro, proc.Pid);
+
+        if (!_headlessSince.TryGetValue(key, out long firstSeen))
+        {
+            _headlessSince[key] = now;
+            return true;
+        }
+
+        return (now - firstSeen) <= graceSeconds;
     }
 
     private static (string? displayName, int score) MatchWslCli(string exeName, string cmdline)
@@ -485,13 +517,14 @@ public partial class WslScanner
         return (1, 0, lower);
     }
 
-    private void CleanStaleEntries(List<CliProcess> results)
+    private void CleanStaleEntries(HashSet<(string distro, int pid)> observedKeys)
     {
-        var liveKeys = results.Select(r => (r.WslDistro, r.Pid)).ToHashSet();
-        foreach (var key in _prevCpu.Keys.Where(k => !liveKeys.Contains(k)).ToList())
+        foreach (var key in _prevCpu.Keys.Where(k => !observedKeys.Contains(k)).ToList())
             _prevCpu.Remove(key);
-        foreach (var key in _prevIo.Keys.Where(k => !liveKeys.Contains(k)).ToList())
+        foreach (var key in _prevIo.Keys.Where(k => !observedKeys.Contains(k)).ToList())
             _prevIo.Remove(key);
+        foreach (var key in _headlessSince.Keys.Where(k => !observedKeys.Contains(k)).ToList())
+            _headlessSince.Remove(key);
     }
 
     private static string RunWslCommand(string distro, string command)

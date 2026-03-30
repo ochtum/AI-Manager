@@ -97,6 +97,9 @@ public partial class MainWindow : Window
             var scanStopwatch = Stopwatch.StartNew();
             var procs = await Task.Run(() =>
             {
+                _wslScanner.ShowHeadlessWslProcesses = _settingsService.Settings.ShowHeadlessWslProcesses;
+                _wslScanner.HeadlessWslGraceSeconds = _settingsService.Settings.HeadlessWslGraceSeconds;
+
                 var winProcs = _processScanner.ScanWindowsProcesses();
                 try
                 {

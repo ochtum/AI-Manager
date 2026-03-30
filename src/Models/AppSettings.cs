@@ -25,6 +25,12 @@ public class AppSettings
     [JsonPropertyName("wsl_terminal_assignments")]
     public Dictionary<string, Dictionary<string, WslTerminalHost>> WslTerminalAssignments { get; set; } = new();
 
+    [JsonPropertyName("show_headless_wsl_processes")]
+    public bool ShowHeadlessWslProcesses { get; set; } = false;
+
+    [JsonPropertyName("headless_wsl_grace_seconds")]
+    public int HeadlessWslGraceSeconds { get; set; } = Constants.DefaultHeadlessWslGraceSeconds;
+
     public static AppSettings CreateDefault() => new()
     {
         AlwaysOnTop = false,
@@ -39,6 +45,8 @@ public class AppSettings
         },
         ProcessLabels = new(),
         WslTerminalAssignments = new(),
+        ShowHeadlessWslProcesses = false,
+        HeadlessWslGraceSeconds = Constants.DefaultHeadlessWslGraceSeconds,
     };
 }
 
@@ -65,6 +73,7 @@ public static class Constants
     public const int DefaultRefreshIntervalMs = 2000;
     public const double CpuBusyThreshold = 2.0;
     public const int IoBusyThreshold = 1000;
+    public const int DefaultHeadlessWslGraceSeconds = 15;
     public const int GeometrySaveDelayMs = 450;
     public const string StatusDetailModeRefreshInterval = "refresh_interval";
     public const string StatusDetailModeScanDuration = "scan_duration";

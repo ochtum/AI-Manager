@@ -130,6 +130,7 @@ public partial class SettingsService
 
         settings.RefreshIntervalMs = NormalizeRefreshIntervalMs(settings.RefreshIntervalMs);
         settings.StatusDetailMode = NormalizeStatusDetailMode(settings.StatusDetailMode);
+        settings.HeadlessWslGraceSeconds = NormalizeHeadlessWslGraceSeconds(settings.HeadlessWslGraceSeconds);
 
         settings.WindowGeometries ??= new();
         foreach (var kvp in defaults.WindowGeometries)
@@ -148,6 +149,9 @@ public partial class SettingsService
         Array.IndexOf(Constants.RefreshIntervalOptionsMs, refreshIntervalMs) >= 0
             ? refreshIntervalMs
             : Constants.DefaultRefreshIntervalMs;
+
+    private static int NormalizeHeadlessWslGraceSeconds(int seconds) =>
+        Math.Clamp(seconds, 0, 300);
 
     public static bool UsesScanDurationStatusDetailMode(string? statusDetailMode) =>
         string.Equals(statusDetailMode, Constants.StatusDetailModeScanDuration, StringComparison.OrdinalIgnoreCase) ||
